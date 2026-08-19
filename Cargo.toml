@@ -4,7 +4,8 @@ resolver = "2"
 # Esempio: "crates/geo-core"
 members = [
     "crates/geo-admin",
-    # "crates/geo-core",
+    "crates/geo-core",
+    "crates/geo-client",
     # "crates/geo-protocol",
 ]
 
