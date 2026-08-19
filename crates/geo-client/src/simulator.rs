@@ -1,8 +1,8 @@
-/// simulazione movimento veicoli
+// simulazione movimento veicoli
 use geo_core::Position;
 use std::path::PathBuf;
 
-/// strategie per la simulazione
+// strategie per la simulazione
 #[derive(Debug, Clone)]
 pub enum Strategy {
     // 1. lettura file con coordinate e tempi
@@ -20,11 +20,11 @@ pub enum Strategy {
     Random { origin: Position, radius_km: f64 },
 }
 
-/// legge file della traccia (formato MM:SS;lat;lon)
-pub fn parse_track(_contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
+// legge file della traccia (formato MM:SS;lat;lon)
+pub fn parse_track(contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
     let mut track = Vec::new();
 
-    for (line_id, line) in _contents.lines().enumerate() {
+    for (line_id, line) in contents.lines().enumerate() {
         let line = line.trim();
         // se la riga è vuota, saltala
         if line.is_empty() { continue; }
@@ -45,8 +45,8 @@ pub fn parse_track(_contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
         let tot_seconds = minutes * 60 + seconds;
 
         // parsing della latitudine e longitudine sostituendo la virgola con il punto
-        let lat_str = parts[1].trim().replace(',', '.');
-        let lon_str = parts[2].trim().replace(',', '.');
+        let lat_str = parts[1].trim().replace(',', ".");
+        let lon_str = parts[2].trim().replace(',', ".");
         let lat: f64 = lat_str.parse()?;
         let lon: f64 = lon_str.parse()?;
 
