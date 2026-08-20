@@ -1,0 +1,17 @@
+﻿{
+  "fleet": [
+    { "user_id": "P3_Camion1", "state": "In Movimento", "last_pos": "45.06, 7.68", "last_update": "10s fa" },
+    { "user_id": "P3_Camion2", "state": "Fermo", "last_pos": "45.10, 7.50", "last_update": "5m fa" }
+  ],
+  "chat": [
+    { "sender": "P3_Camion1", "text": "Sto per arrivare al casello." },
+    { "sender": "ADMIN", "text": "Ricevuto, procedi pure." }
+  ],
+  "query_report": {
+    "target_user": "P3_Camion1",
+    "distance_km": 12.5,
+    "avg_speed": 65.0,
+    "moving_time": "12m 30s",
+    "pause_time": "0m"
+  }
+}
