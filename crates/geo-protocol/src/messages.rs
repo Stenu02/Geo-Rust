@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// meglio un errore chiaro all'handshake che byte interpretati male a meta' demo.
 pub const PROTOCOL_VERSION: u16 = 1;
 
-/// Ruolo dichiarato all'apertura della connessione (R12: due entita' distinte).
+/// Ruolo dichiarato all'apertura della connessione
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     Trucker,

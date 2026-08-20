@@ -1,6 +1,5 @@
 //! I tre periodi su cui si possono chiedere le analisi.
 
-
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 

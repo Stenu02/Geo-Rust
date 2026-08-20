@@ -8,7 +8,6 @@ use crate::timerange::{RangeSpec, TimeRange};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovementReport {
     /// Chi, quale periodo e' stato chiesto e su quali estremi si e' risolto.

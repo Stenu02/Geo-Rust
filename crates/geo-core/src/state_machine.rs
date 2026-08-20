@@ -1,5 +1,5 @@
 //! Macchina a stati dell'utente: i tre stati e le transizioni fra loro.
- //! Il ritorno a FERMO si misura con un timer sull'ultimo cambio di coordinata
+//! Il ritorno a FERMO si misura con un timer sull'ultimo cambio di coordinata
 use crate::position::Position;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

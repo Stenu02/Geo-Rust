@@ -7,7 +7,6 @@ use crate::timerange::TimeRange;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-
 /// Un periodo continuo durante il quale un utente e' rimasto in un certo stato.
 /// `end == None` significa intervallo ancora aperto, cioe' lo stato corrente:
 /// ogni utente ne ha al piu' uno.
@@ -45,7 +44,6 @@ impl StateInterval {
     pub fn duration(&self, _now: DateTime<Utc>) -> Duration {
         todo!("F1 — P1")
     }
-
 
     /// Interseca l'intervallo con un periodo; `None` se non si sovrappongono.
     ///

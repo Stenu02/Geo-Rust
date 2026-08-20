@@ -14,8 +14,6 @@ impl std::fmt::Display for UserId {
     }
 }
 
-
-
 /// Una coordinata geografica in gradi decimali.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Position {
