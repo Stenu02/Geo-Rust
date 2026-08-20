@@ -1,0 +1,13 @@
+[package]
+name = "geo-core"
+version = "0.1.0"
+edition = "2021"
+
+# REGOLA DI CONFINE: qui dentro NON entrano tokio, rusqlite, std::net, std::fs.
+# Se vi trovate a volerne aggiungere una, il codice che ne ha bisogno appartiene
+# a un altro crate. Questa disciplina e' cio' che rende testabile in millisecondi
+# una regola espressa in minuti (R7).
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
