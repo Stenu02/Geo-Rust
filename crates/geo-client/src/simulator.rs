@@ -1,26 +1,26 @@
-// simulazione movimento veicoli
+//! simulazione movimento veicoli
 use geo_core::Position;
 use std::path::PathBuf;
 
-// strategie per la simulazione
+/// strategie per la simulazione
 #[derive(Debug, Clone)]
 pub enum Strategy {
-    // 1. lettura file con coordinate e tempi
+    /// 1. lettura file con coordinate e tempi
     File { path: PathBuf },
-    // 2. punto di partenza e punto di arrivo, con eventuali pause
+    /// 2. punto di partenza e punto di arrivo, con eventuali pause
     Interpolated {
         from: Position,
         to: Position,
         duration_secs: i64,
         pauses: Vec<(i64, i64)>,
     },
-    // 3. inserimento manuale delle coordinate
+    /// 3. inserimento manuale delle coordinate
     Manual,
-    // 4. generatore pseudo-casuale di posizioni
+    /// 4. generatore pseudo-casuale di posizioni
     Random { origin: Position, radius_km: f64 },
 }
 
-// legge file della traccia (formato MM:SS;lat;lon)
+/// legge file della traccia (formato MM:SS;lat;lon)
 pub fn parse_track(contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
     let mut track = Vec::new();
 
@@ -60,12 +60,12 @@ pub fn parse_track(contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
     Ok(track)
 }
 
-// test
+/// test
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // caso base
+    /// caso base
     #[test]
     fn test_track_parser_comma_decimal() {
         let strings = "00:00;45,0618513;7,6797161\n00:30;45,0601242;7,6851330";
@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(track[0].1, Position::new(45.0618513, 7.6797161));
     }
 
-    // caso riga con numero di campi errato
+    /// caso riga con numero di campi errato
     #[test]
     fn test_track_wrong_fields() {
         let strings = "00:00;45,0618513"; // manca il campo della longitudine
@@ -89,7 +89,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // caso coordinate fuori range
+    /// caso coordinate fuori range
     #[test]
     fn test_track_out_of_range_coordinate() {
         let strings = "00:00;95,0;7,6797161"; // 95 gradi non è una latitudine valida
