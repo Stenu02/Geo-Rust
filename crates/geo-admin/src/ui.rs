@@ -5,19 +5,19 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table, Paragraph, Wrap},
     Frame, Terminal,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use crossterm::event::{self, Event, KeyCode};
 use std::time::Duration;
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct MockData {
     pub fleet: Vec<FleetEntry>,
     pub chat: Vec<ChatEntry>,
     pub query_report: QueryReport,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct FleetEntry {
     pub user_id: String,
     pub state: String,
@@ -25,13 +25,13 @@ pub struct FleetEntry {
     pub last_update: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ChatEntry {
     pub sender: String,
     pub text: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct QueryReport {
     pub target_user: String,
     pub distance_km: f64,
@@ -43,6 +43,7 @@ pub struct QueryReport {
 pub struct AdminUi {
     pub data: MockData,
     pub input: String,
+    pub data_path: String,
 }
 
 impl AdminUi {
@@ -51,7 +52,11 @@ impl AdminUi {
         // Rimuove il BOM (Byte Order Mark) invisibile se presente
         let content = content.trim_start_matches('\u{feff}');
         let data: MockData = serde_json::from_str(content)?;
-        Ok(Self { data, input: String::new() })
+        Ok(Self { 
+            data, 
+            input: String::new(),
+            data_path: data_path.to_string(),
+        })
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> anyhow::Result<()> {
@@ -59,17 +64,26 @@ impl AdminUi {
             terminal.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
-                    match key.code {
-                        KeyCode::Esc => break, // Esci con Esc invece di 'q' per poter digitare
-                        KeyCode::Char(c) => self.input.push(c),
-                        KeyCode::Backspace => { self.input.pop(); }
-                        KeyCode::Enter => {
-                            if !self.input.is_empty() {
-                                self.data.chat.push(ChatEntry { sender: "ADMIN".to_string(), text: self.input.clone() });
-                                self.input.clear();
+                    // Controlla che sia una pressione
+                    if key.kind == crossterm::event::KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Esc => break, // Esci con Esc
+                            KeyCode::Char(c) => self.input.push(c),
+                            KeyCode::Backspace => { self.input.pop(); }
+                            KeyCode::Enter => {
+                                if !self.input.is_empty() {
+                                    self.data.chat.push(ChatEntry { sender: "ADMIN".to_string(), text: self.input.clone() });
+                                    self.input.clear();
+                                    
+                                    // serde_json::to_string_pretty formatta i dati in JSON leggibile con indentazione
+                                    if let Ok(json_string) = serde_json::to_string_pretty(&self.data) {
+                                        // fs::write sovrascrive il file con la nuova stringa
+                                        let _ = fs::write(&self.data_path, json_string);
+                                    }
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
@@ -145,21 +159,41 @@ impl AdminUi {
     }
 
     fn draw_chat(&self, f: &mut Frame, area: Rect) {
-        let mut chat_text = String::new();
+        // Dividiamo l'area verticalmente: la chat sopra (spazio flessibile) e l'input sotto (3 righe fisse)
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+            .split(area);
+
+        // --- PANNELLO STORICO CHAT ---
+        let mut chat_history = String::new();
         for msg in &self.data.chat {
-            chat_text.push_str(&format!("[{}]: {}\n", msg.sender, msg.text));
+            chat_history.push_str(&format!("[{}]: {}\n", msg.sender, msg.text));
         }
+
+        let lines_count = chat_history.lines().count() as u16;
+        let history_height = chunks[0].height.saturating_sub(2); // -2 per i bordi superiore e inferiore
         
-        chat_text.push_str("\n--- INSERISCI MESSAGGIO ---\n");
-        chat_text.push_str("> ");
-        chat_text.push_str(&self.input);
-        // Cursore finto
-        chat_text.push_str("█");
+        // Calcola lo scroll solo per la cronologia (evitando problemi con i newline extra che Ratatui elimina col wrap)
+        let scroll_offset = if lines_count > history_height {
+            lines_count - history_height
+        } else {
+            0
+        };
 
-        let p = Paragraph::new(chat_text)
-            .block(Block::default().borders(Borders::ALL).title(" Chat "))
-            .wrap(Wrap { trim: true });
+        let history_p = Paragraph::new(chat_history)
+            .block(Block::default().borders(Borders::ALL).title(" Cronologia Chat "))
+            .wrap(Wrap { trim: true }) // Il trim può falsare il conteggio righe se ci sono linee vuote, ma ora non le usiamo!
+            .scroll((scroll_offset, 0));
 
-        f.render_widget(p, area);
+        f.render_widget(history_p, chunks[0]);
+
+        // --- PANNELLO INPUT MESSAGGIO ---
+        // Mostra il testo digitato con un finto cursore alla fine
+        let input_text = format!("> {}█", self.input);
+        let input_p = Paragraph::new(input_text)
+            .block(Block::default().borders(Borders::ALL).title(" Invia Messaggio "));
+
+        f.render_widget(input_p, chunks[1]);
     }
 }
