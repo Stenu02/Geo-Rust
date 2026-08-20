@@ -59,3 +59,43 @@ pub fn parse_track(contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
     }
     Ok(track)
 }
+
+// test
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // caso base
+    #[test]
+    fn test_track_parser_comma_decimal() {
+        let strings = "00:00;45,0618513;7,6797161\n00:30;45,0601242;7,6851330";
+        let track = parse_track(strings).expect("Il parsing doveva avvenire");
+
+        // controllo lunghezza
+        assert_eq!(track.len(), 2);
+
+        // controllo contenuto
+        assert_eq!(track[0].0, 0);
+        assert_eq!(track[0].1, Position::new(45.0618513, 7.6797161));
+    }
+
+    // caso riga con numero di campi errato
+    #[test]
+    fn test_track_wrong_fields() {
+        let strings = "00:00;45,0618513"; // manca il campo della longitudine
+        let result = parse_track(strings);
+
+        // controllo che restituisca errore
+        assert!(result.is_err());
+    }
+
+    // caso coordinate fuori range
+    #[test]
+    fn test_track_out_of_range_coordinate() {
+        let strings = "00:00;95,0;7,6797161"; // 95 gradi non è una latitudine valida
+        let result = parse_track(strings);
+
+        // controllo che restituisca errore
+        assert!(result.is_err());
+    }
+}
