@@ -1,0 +1,17 @@
+[package]
+name = "geo-core"
+version = "0.1.0"
+edition = "2021"
+
+# BOUNDARY RULE: tokio, rusqlite, std::net, std::fs do NOT belong in here.
+# If you find yourself wanting to add one, the code that needs it belongs to
+# another crate. This discipline is what makes a rule expressed in minutes (R7)
+# testable in milliseconds.
+# chrono-tz is pure computation (zone data tables, no I/O), so it fits the boundary
+# rule. It gives R11 an explicit company time zone instead of the machine's, keeping
+# `TimeRange::resolve` deterministic. See COMPANY_TZ in lib.rs and docs/decisioni.md.
+[dependencies]
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
