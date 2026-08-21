@@ -1,6 +1,9 @@
 //! simulazione movimento veicoli
+
 use geo_core::Position;
 use std::path::PathBuf;
+use tokio::time::Interval;
+use rand::Rng;
 
 /// strategie per la simulazione
 #[derive(Debug, Clone)]
@@ -60,6 +63,26 @@ pub fn parse_track(contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
     Ok(track)
 }
 
+pub fn random_generator(origin: Position, radius_km: f64, points_to_generate: i64, interval_sec: i64) -> anyhow::Result<Vec<(i64, Position)>> {
+    let mut rng = rand::thread_rng();
+    let distance_km: f64 = rng.gen_range(0.0..radius_km);
+    let angle_rad: f64 = rng.gen_range(0.0..(2.0 * std::f64::consts::PI));
+
+    todo!()
+}
+
+pub fn offset_position(origin: Position, distance_km: f64, angle_rad: f64) -> Position {
+    let earth_radius: f64 = 6371.0;
+
+    let delta_lat = (distance_km * angle_rad.cos()) / earth_radius  * (180.0/std::f64::consts::PI);
+    let delta_lon = (distance_km * angle_rad.sin()) / (earth_radius  * origin.lat.to_radians().cos()) * (180.0/std::f64::consts::PI);
+
+    let new_lat = origin.lat + delta_lat;
+    let new_lon = origin.lon + delta_lon;
+
+    Position::new(new_lat, new_lon)
+}
+
 /// test
 #[cfg(test)]
 mod tests {
@@ -97,5 +120,13 @@ mod tests {
 
         // controllo che restituisca errore
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_offset_position_north() {
+        let origin = Position::new(45.0, 7.0);
+        let result = offset_position(origin, 10.0, 0.0);
+        assert_eq!(result.lon, origin.lon);
+        assert!(result.lat > origin.lat);
     }
 }
