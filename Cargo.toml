@@ -8,6 +8,7 @@ members = [
     "crates/geo-server",
     "crates/geo-admin",
     "crates/geo-core",
+    "crates/geo-client",
     # "crates/geo-protocol",
 ]
 
