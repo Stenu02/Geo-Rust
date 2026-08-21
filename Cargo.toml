@@ -3,8 +3,12 @@ resolver = "2"
 # Indicare i crates membri del progetto ogni volta che vengono creati
 # Esempio: "crates/geo-core"
 members = [
+    "crates/geo-core",
+    "crates/geo-protocol",
+    "crates/geo-server",
     "crates/geo-admin",
-    # "crates/geo-core",
+    "crates/geo-core",
+    "crates/geo-client",
     # "crates/geo-protocol",
 ]
 
@@ -12,6 +16,7 @@ members = [
 # Serve a evitare che due crate compilino due versioni diverse della stessa dipendenza.
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.9"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 thiserror = "1"
