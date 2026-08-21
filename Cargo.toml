@@ -13,6 +13,7 @@ members = [
 # Serve a evitare che due crate compilino due versioni diverse della stessa dipendenza.
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.9"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 thiserror = "1"
