@@ -1,0 +1,7 @@
+# Versione fissata: tutti nel gruppo e la CI compilano con lo stesso compilatore.
+# Evita il classico "da me funziona".
+# Minimo tecnico 1.85: sotto quella soglia le dipendenze non si risolvono
+# (clap_lex richiede il supporto a edition2024 nel manifest).
+[toolchain]
+channel = "1.93"
+components = ["rustfmt", "clippy"]
