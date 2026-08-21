@@ -1,20 +1,16 @@
-//! Movement analysis (R8, R9, R10, R11).
+//! Analisi del movimento di un utente su un periodo.
 //!
-//! The computation happens here, and it is invoked by the SERVER: the professor was
-//! explicit ("You must provide a server-side application that runs the queries").
-//! `geo-admin` receives a ready-made `MovementReport` and just displays it.
+//! Il calcolo avviene qui ed e' invocato dal server
 
-use crate::interval::{total_in, StateInterval};
+use crate::interval::StateInterval;
 use crate::position::{FixedPosition, UserId};
 use crate::timerange::{RangeSpec, TimeRange};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use crate::geo_math::haversine_km;
-use crate::UserState;
 
-/// The result of a query. It travels over the wire to the administrator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovementReport {
+    /// Chi, quale periodo e' stato chiesto e su quali estremi si e' risolto.
     pub user: UserId,
     pub spec: RangeSpec,
     pub range: TimeRange,

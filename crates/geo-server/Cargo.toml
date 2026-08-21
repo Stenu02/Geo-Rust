@@ -1,0 +1,31 @@
+[package]
+name = "geo-server"
+version = "0.1.0"
+edition = "2021"
+
+# Logica in lib.rs, main.rs sottile: permette test di integrazione che avviano
+# il server su porta effimera dentro `cargo test` e gli parlano con client veri.
+[[bin]]
+name = "geo-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "geo-supervisor"
+path = "src/bin/supervisor.rs"
+
+[dependencies]
+geo-core = { path = "../geo-core" }
+geo-protocol = { path = "../geo-protocol" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+rusqlite = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

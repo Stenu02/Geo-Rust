@@ -3,6 +3,9 @@ resolver = "2"
 # Indicare i crates membri del progetto ogni volta che vengono creati
 # Esempio: "crates/geo-core"
 members = [
+    "crates/geo-core",
+    "crates/geo-protocol",
+    "crates/geo-server",
     "crates/geo-admin",
     "crates/geo-core",
     # "crates/geo-protocol",

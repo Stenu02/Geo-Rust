@@ -1,0 +1,15 @@
+[package]
+name = "geo-protocol"
+version = "0.1.0"
+edition = "2021"
+
+# Contiene FORME, non logica. Se qui dentro compare un `if` che non sia il
+# controllo di versione, quel codice appartiene altrove.
+[dependencies]
+geo-core = { path = "../geo-core" }
+chrono = { workspace = true }
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+tokio-util = { workspace = true }
