@@ -4,4 +4,4 @@
 # (clap_lex richiede il supporto a edition2024 nel manifest).
 [toolchain]
 channel = "1.93"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "rust-analyzer"]
