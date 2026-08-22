@@ -12,10 +12,12 @@
 //!
 //! ATTACCO: P2, fase F2. E' molto probabile che ve lo chiedano all'orale.
 
-use geo_core::UserId;
+use geo_core::{Position, StateInterval, TimeRange, Timestamped, UserId, UserState};
 use rusqlite::Connection;
 use std::path::Path;
+use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, oneshot};
+use geo_core::position::FixedPosition;
 
 /// Quanti comandi possono restare in coda prima che chi invia debba aspettare.
 /// Un limite serve: senza, una raffica di scritture farebbe crescere la coda
@@ -36,6 +38,16 @@ enum Command {
         /// Some(id, hash) se esiste, None se non c'e'.
         reply: oneshot::Sender<anyhow::Result<Option<(UserId, String)>>>,
     },
+    PositionsFor {
+        user: UserId,
+        range: TimeRange,
+        reply: oneshot::Sender<anyhow::Result<Vec<FixedPosition>>>,
+    },
+    IntervalsFor {
+        user: UserId,
+        range: TimeRange,
+        reply: oneshot::Sender<anyhow::Result<Vec<StateInterval>>>,
+    }
 }
 
 /// Da qui si parla con il database. E' clonabile: ogni sessione ne tiene
@@ -107,6 +119,20 @@ impl StorageHandle {
         rx.await?
     }
 
+    /// Restituisce un vettore di FixedPositions, necessario per l'analisi e la creazione del report di movimento
+    pub async fn positions_for(&self, user: UserId, range: TimeRange) -> anyhow::Result<Vec<FixedPosition>> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::PositionsFor { user, range, reply }).await?;
+        rx.await?
+    }
+
+    /// Restituisce un vettore di StateInterval, necessario per l'analisi e la creazione del report di movimento
+    pub async fn intervals_for(&self, user: UserId, range: TimeRange) -> anyhow::Result<Vec<StateInterval>> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::IntervalsFor { user, range, reply }).await?;
+        rx.await?
+    }
+
     /// Mette un comando in coda.
     ///
     /// Fallisce solo se l'attore non c'e' piu': succede allo spegnimento, ed e'
@@ -138,6 +164,12 @@ fn esegui(conn: &Connection, cmd: Command) {
         }
         Command::FindUser { username, reply } => {
             let _ = reply.send(trova_utente(conn, &username));
+        }
+        Command::PositionsFor { user, range, reply } => {
+            let _ = reply.send(posizioni_per(conn, user, range));
+        }
+        Command::IntervalsFor { user, range, reply } => {
+            let _ = reply.send(intervalli_per(conn, user, range));
         }
     }
 }
@@ -191,5 +223,128 @@ fn trova_utente(conn: &Connection, username: &str) -> anyhow::Result<Option<(Use
         // "Non esiste" non e' un errore: e' una risposta valida alla domanda.
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Restituisce le posizioni assunte dall'utente all'interno del range specificato
+fn posizioni_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::Result<Vec<FixedPosition>> {
+    let mut statement = conn.prepare(
+        "SELECT at, lat, lon FROM positions
+         WHERE user_id = ?1 AND at >= ?2 AND at < ?3
+         ORDER BY at",
+    )?;
+    let rows = statement.query_map(
+        (user.0, range.start.to_rfc3339(), range.end.to_rfc3339()),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)),
+    )?;
+    let mut output= Vec::new();
+    for row in rows {
+        let (at, lat, lon) = row?;
+        let at = DateTime::parse_from_rfc3339(&at)?.with_timezone(&Utc);
+        output.push(Timestamped::new(at, Position::new(lat, lon)))
+    }
+    Ok(output)
+}
+
+/// Restituisce gli intervalli di tempo registrati dall'utente nel range specificato.
+fn intervalli_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::Result<Vec<StateInterval>> {
+    let mut statement = conn.prepare(
+        "SELECT state, start_at, end_at FROM state_intervals
+         WHERE user_id = ?1 AND start_at < ?3
+         AND (end_at IS NULL OR end_at >= ?2)
+         ORDER BY start_at",
+    )?;
+    let rows = statement.query_map(
+        (user.0, range.start.to_rfc3339(), range.end.to_rfc3339()),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+    )?;
+    let mut output = Vec::new();
+    for row in rows {
+        let (state, start_at, end_at) = row?;
+        let state = UserState::from_db_str(&state)
+            .ok_or_else(|| anyhow::anyhow!("stato non riconosciuto nel DB: {state}"))?;
+        let start = DateTime::parse_from_rfc3339(&start_at)?.with_timezone(&Utc);
+        let end = end_at
+            .map(|s| DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)))
+            .transpose()?;
+        output.push(StateInterval{ state, start, end });
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn utc(h: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 8, 20, h, 0, 0).unwrap()
+    }
+
+    /// Un DB in memoria con lo schema applicato e un utente (id 1).
+    fn db_con_utente() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at)
+             VALUES (1, 'camion', 'x', 'trucker', ?1)",
+            [utc(0).to_rfc3339()],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_posizioni_per_filtra_sul_range() {
+        let conn = db_con_utente();
+        for (at, lat, lon) in [(utc(11), 45.0, 7.0), (utc(12), 45.5, 7.0), (utc(23), 46.0, 7.0)] {
+            conn.execute(
+                "INSERT INTO positions (user_id, at, lat, lon) VALUES (1, ?1, ?2, ?3)",
+                (at.to_rfc3339(), lat, lon),
+            )
+            .unwrap();
+        }
+
+        let range = TimeRange::new(utc(10), utc(20)); // [10:00, 20:00)
+        let pos = posizioni_per(&conn, UserId(1), range).unwrap();
+
+        // La posizione delle 23:00 e' fuori dal range.
+        assert_eq!(pos.len(), 2);
+        assert_eq!(pos[0].at, utc(11));
+        assert_eq!(pos[1].at, utc(12));
+    }
+
+    #[test]
+    fn test_intervalli_per_include_sovrapposti_e_aperti() {
+        let conn = db_con_utente();
+        // Chiuso dentro il range.
+        conn.execute(
+            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+             VALUES (1, 'moving', ?1, ?2)",
+            (utc(11).to_rfc3339(), utc(12).to_rfc3339()),
+        )
+        .unwrap();
+        // Aperto (end NULL): si sovrappone al range.
+        conn.execute(
+            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+             VALUES (1, 'stopped', ?1, NULL)",
+            [utc(12).to_rfc3339()],
+        )
+        .unwrap();
+        // Interamente prima del range: deve essere escluso.
+        conn.execute(
+            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+             VALUES (1, 'moving', ?1, ?2)",
+            (utc(1).to_rfc3339(), utc(2).to_rfc3339()),
+        )
+        .unwrap();
+
+        let range = TimeRange::new(utc(10), utc(20));
+        let iv = intervalli_per(&conn, UserId(1), range).unwrap();
+
+        assert_eq!(iv.len(), 2);
+        assert_eq!(iv[0].state, UserState::Moving);
+        assert_eq!(iv[1].state, UserState::Stopped);
+        assert_eq!(iv[1].end, None); // l'intervallo aperto resta aperto
     }
 }

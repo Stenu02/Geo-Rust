@@ -23,7 +23,9 @@ type Wire = Framed<TcpStream, LengthDelimitedCodec>;
 fn config() -> ServerConfig {
     ServerConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
-        db_path: PathBuf::from("test.db"),
+        // DB in memoria, privato per ogni server: i test girano in parallelo e un
+        // file condiviso li farebbe bloccare a vicenda sul lock SQLite.
+        db_path: PathBuf::from(":memory:"),
         log_path: PathBuf::from("test.csv"),
         time_scale: 1,
     }

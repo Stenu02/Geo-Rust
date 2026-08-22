@@ -1,31 +1,22 @@
 //! Gestione delle interrogazioni dell'amministratore (R12a).
 //!
-//! Trasforma un `AdminMessage::Query` in un `MovementReport` gia' pronto: risolve il
-//! periodo e delega i numeri a `geo_core::analytics::analyze`.
+//! Trasforma un `AdminMessage::Query` in un `MovementReport` gia' pronto.
 //!
 //! IL CALCOLO AVVIENE QUI, non nel client amministratore: il professore e' stato
 //! esplicito ("Devi rendere disponibile una applicazione lato server che fa
 //! interrogazioni"). `geo-admin` riceve un report finito e si limita a mostrarlo.
 //!
 //! Divisione delle responsabilita':
-//! - la lettura dal DB (recupero di intervalli e posizioni) e' dell'attore storage (P2);
-//! - risolvere il periodo e chiamare `analyze` sta qui (P1), perche' chi conosce il
-//!   contratto di `analyze` e' chi l'ha scritta.
+//! - la lettura dal DB (`storage::positions_for` / `intervals_for`) e' dell'attore
+//!   storage.
+//! - risoluzione del range in session.rs (chiamante)
+//! - AdminHandler si occupa di chiamare `analyze` e di restituire il report generato.
 //!
-//! CONTRATTO STORAGE su cui poggia questo handler (da fornire in `storage.rs`, P2):
-//! dati un `user` e il `range` risolto, due letture grossolane —
-//! - posizioni:  `WHERE user_id = ? AND at >= range.start AND at < range.end`,
-//!               ordinate per `at`;
-//! - intervalli: ogni `state_interval` dell'utente che SI SOVRAPPONE al range, cioe'
-//!               `start_at < range.end AND (end_at IS NULL OR end_at >= range.start)`.
-//! Il troncamento fine agli estremi lo fa `analyze` tramite `StateInterval::clip_to`,
-//! quindi la query SQL deve filtrare solo grossolanamente.
+//! Il flusso completo e' implementato in `session::admin_loop`, ramo `Query`
 //!
-//! Possibile implementazione del chiamante di build_report:
-//! let range = TimeRange::resolve(spec, now);
-//! let intervals = storage.intervals_for(user, range).await?;
-//! let positions = storage.positions_for(user, range).await?;
-//! let report = AdminHandler::build_report(user, spec, &intervals, &positions, now);
+//! Le due letture di storage filtrano solo grossolanamente sul periodo (posizioni
+//! dentro `[start, end)`, intervalli che si sovrappongono al range); il troncamento
+//! fine agli estremi lo fa poi `analyze` tramite `StateInterval::clip_to`.
 
 use chrono::{DateTime, Utc};
 use geo_core::analytics::analyze;
@@ -35,20 +26,20 @@ use geo_core::{MovementReport, RangeSpec, StateInterval, TimeRange, UserId};
 pub struct AdminHandler;
 
 impl AdminHandler {
-    /// Costruisce il report per una interrogazione, a partire da intervalli e posizioni
-    /// dell'utente gia' letti dal DB (vedi il contratto storage sopra).
+    /// Costruisce il report per una interrogazione, dal periodo gia' risolto e da
+    /// intervalli e posizioni dell'utente gia' letti dal DB (vedi il flusso sopra).
     ///
-    /// `now` arriva come parametro, non viene mai letto dall'orologio qui: mantiene
-    /// testabile l'intero percorso e rende riproducibile il periodo risolto.
+    /// `range` arriva dal chiamante, che lo ha gia' usato per le letture di storage:
+    /// non viene ricalcolato qui. `now` serve ad `analyze` per chiudere virtualmente
+    /// gli intervalli ancora aperti.
     pub fn build_report(
         user: UserId,
         spec: RangeSpec,
+        range: TimeRange,
         intervals: &[StateInterval],
         positions: &[FixedPosition],
         now: DateTime<Utc>,
-        // range: TimeRange, //calcolato una volta sola dal chiamante una volta che storage.rs è stato implementato
     ) -> MovementReport {
-        let range = TimeRange::resolve(spec, now);
         analyze(user, spec, range, intervals, positions, now)
     }
 }
@@ -82,8 +73,9 @@ mod tests {
 
         let distance= haversine_km(&pos1, &pos2);
 
-        let report =
-            AdminHandler::build_report(UserId(1), RangeSpec::Today, &intervals, &positions, now);
+        let report = AdminHandler::build_report(
+            UserId(1), RangeSpec::Today, range, &intervals, &positions, now,
+        );
 
         // I metadati della query sono riportati e il periodo e' quello risolto.
         assert_eq!(report.user, UserId(1));
