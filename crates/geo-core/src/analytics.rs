@@ -2,11 +2,13 @@
 //!
 //! Il calcolo avviene qui ed e' invocato dal server
 
-use crate::interval::StateInterval;
+use crate::interval::{total_in, StateInterval};
 use crate::position::{FixedPosition, UserId};
 use crate::timerange::{RangeSpec, TimeRange};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use crate::geo_math::haversine_km;
+use crate::UserState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovementReport {
