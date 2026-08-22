@@ -1,13 +1,31 @@
 [package]
 name = "geo-client"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+default-run = "geo-client"
+
+[[bin]]
+name = "geo-client"
+path = "src/main.rs"
+
+[[bin]]
+name = "fleet"
+path = "src/bin/fleet.rs"
+
+[features]
+default = ["tui"]
+tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
 geo-core = { path = "../geo-core" }
-anyhow = { workspace = true }
+geo-protocol = { path = "../geo-protocol" }
 tokio = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
+rand = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-rand = "0.8"
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
