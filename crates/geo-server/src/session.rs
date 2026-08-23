@@ -8,15 +8,17 @@
 
 use crate::stub;
 use futures::{SinkExt, StreamExt};
-use geo_core::UserState;
+use geo_core::{TimeRange, UserState};
 use geo_protocol::{
     decode, encode, frame_codec, AdminMessage, AdminReply, ClientMessage, ErrorCode, Hello, Role,
     ServerMessage, PROTOCOL_VERSION,
 };
 use std::time::Duration;
+use chrono::Utc;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
+use crate::storage::StorageHandle;
 
 /// La connessione con il framing gia' applicato: si legge e si scrive per messaggi
 /// interi, non per byte.
@@ -29,7 +31,11 @@ type Wire = Framed<TcpStream, LengthDelimitedCodec>;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Gestisce una singola connessione fino alla sua chiusura.
-pub async fn handle(stream: TcpStream, shutdown: CancellationToken) -> anyhow::Result<()> {
+pub async fn handle(
+    stream: TcpStream,
+    shutdown: CancellationToken,
+    storage: StorageHandle,
+) -> anyhow::Result<()> {
     let peer = stream.peer_addr()?;
     let mut wire = Framed::new(stream, frame_codec());
 
@@ -45,7 +51,7 @@ pub async fn handle(stream: TcpStream, shutdown: CancellationToken) -> anyhow::R
     // successivi: gli stessi byte sono un ClientMessage o un AdminMessage.
     let esito = match hello.role {
         Role::Trucker => trucker_loop(&mut wire, &shutdown).await,
-        Role::Admin => admin_loop(&mut wire, &shutdown).await,
+        Role::Admin => admin_loop(&mut wire, &shutdown, &storage).await,
     };
 
     tracing::info!(%peer, "sessione chiusa");
@@ -167,7 +173,11 @@ async fn trucker_loop(wire: &mut Wire, shutdown: &CancellationToken) -> anyhow::
 }
 
 /// Dialogo con l'amministratore.
-async fn admin_loop(wire: &mut Wire, shutdown: &CancellationToken) -> anyhow::Result<()> {
+async fn admin_loop(
+    wire: &mut Wire,
+    shutdown: &CancellationToken,
+    storage: &StorageHandle,
+) -> anyhow::Result<()> {
     loop {
         let frame = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -198,14 +208,18 @@ async fn admin_loop(wire: &mut Wire, shutdown: &CancellationToken) -> anyhow::Re
                 )
                 .await?;
             }
-            // Qui passera' la giuntura verso admin.rs: estrarre dal database,
-            // chiamare le analisi, rispedire il report.
+            // risolve il periodo, estrae dal database intervalli e
+            // posizioni, chiama la creazione del repor e lo rispedisce.
             AdminMessage::Query { user, spec } => {
-                send(
-                    wire,
-                    &AdminReply::QueryResult(Box::new(stub::report(user, spec))),
-                )
-                .await?;
+                let now = Utc::now();
+                let range = TimeRange::resolve(spec, now);
+                let intervals = storage.intervals_for(user, range).await?;
+                let positions = storage.positions_for(user, range).await?;
+                let report = crate::admin::AdminHandler::build_report(
+                    user, spec, range, &intervals, &positions, now,
+                );
+
+                send(wire, &AdminReply::QueryResult(Box::new(report))).await?;
             }
             AdminMessage::SendDirect { to, text } => {
                 tracing::info!(%to, %text, "messaggio diretto (non ancora instradato)")
