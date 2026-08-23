@@ -12,12 +12,19 @@
 //!
 //! ATTACCO: P2, fase F2. E' molto probabile che ve lo chiedano all'orale.
 
+use chrono::{DateTime, Utc};
+use geo_core::position::FixedPosition;
 use geo_core::{Position, StateInterval, TimeRange, Timestamped, UserId, UserState};
 use rusqlite::Connection;
 use std::path::Path;
-use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, oneshot};
-use geo_core::position::FixedPosition;
+
+/// Errore distinguibile dagli altri: permette a chi chiama di rispondere
+/// "username gia' in uso" invece di un errore generico, senza dover confrontare
+/// stringhe di messaggio.
+#[derive(Debug, thiserror::Error)]
+#[error("username gia' in uso")]
+pub struct UsernameTaken;
 
 /// Quanti comandi possono restare in coda prima che chi invia debba aspettare.
 /// Un limite serve: senza, una raffica di scritture farebbe crescere la coda
@@ -47,7 +54,7 @@ enum Command {
         user: UserId,
         range: TimeRange,
         reply: oneshot::Sender<anyhow::Result<Vec<StateInterval>>>,
-    }
+    },
 }
 
 /// Da qui si parla con il database. E' clonabile: ogni sessione ne tiene
@@ -120,16 +127,26 @@ impl StorageHandle {
     }
 
     /// Restituisce un vettore di FixedPositions, necessario per l'analisi e la creazione del report di movimento
-    pub async fn positions_for(&self, user: UserId, range: TimeRange) -> anyhow::Result<Vec<FixedPosition>> {
+    pub async fn positions_for(
+        &self,
+        user: UserId,
+        range: TimeRange,
+    ) -> anyhow::Result<Vec<FixedPosition>> {
         let (reply, rx) = oneshot::channel();
-        self.invia(Command::PositionsFor { user, range, reply }).await?;
+        self.invia(Command::PositionsFor { user, range, reply })
+            .await?;
         rx.await?
     }
 
     /// Restituisce un vettore di StateInterval, necessario per l'analisi e la creazione del report di movimento
-    pub async fn intervals_for(&self, user: UserId, range: TimeRange) -> anyhow::Result<Vec<StateInterval>> {
+    pub async fn intervals_for(
+        &self,
+        user: UserId,
+        range: TimeRange,
+    ) -> anyhow::Result<Vec<StateInterval>> {
         let (reply, rx) = oneshot::channel();
-        self.invia(Command::IntervalsFor { user, range, reply }).await?;
+        self.invia(Command::IntervalsFor { user, range, reply })
+            .await?;
         rx.await?
     }
 
@@ -204,7 +221,7 @@ fn crea_utente(
         Err(rusqlite::Error::SqliteFailure(e, _))
             if e.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
-            anyhow::bail!("username gia' in uso")
+            anyhow::bail!(UsernameTaken)
         }
         Err(e) => Err(e.into()),
     }
@@ -227,7 +244,11 @@ fn trova_utente(conn: &Connection, username: &str) -> anyhow::Result<Option<(Use
 }
 
 /// Restituisce le posizioni assunte dall'utente all'interno del range specificato
-fn posizioni_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::Result<Vec<FixedPosition>> {
+fn posizioni_per(
+    conn: &Connection,
+    user: UserId,
+    range: TimeRange,
+) -> anyhow::Result<Vec<FixedPosition>> {
     let mut statement = conn.prepare(
         "SELECT at, lat, lon FROM positions
          WHERE user_id = ?1 AND at >= ?2 AND at < ?3
@@ -235,9 +256,15 @@ fn posizioni_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::R
     )?;
     let rows = statement.query_map(
         (user.0, range.start.to_rfc3339(), range.end.to_rfc3339()),
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+            ))
+        },
     )?;
-    let mut output= Vec::new();
+    let mut output = Vec::new();
     for row in rows {
         let (at, lat, lon) = row?;
         let at = DateTime::parse_from_rfc3339(&at)?.with_timezone(&Utc);
@@ -247,7 +274,11 @@ fn posizioni_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::R
 }
 
 /// Restituisce gli intervalli di tempo registrati dall'utente nel range specificato.
-fn intervalli_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::Result<Vec<StateInterval>> {
+fn intervalli_per(
+    conn: &Connection,
+    user: UserId,
+    range: TimeRange,
+) -> anyhow::Result<Vec<StateInterval>> {
     let mut statement = conn.prepare(
         "SELECT state, start_at, end_at FROM state_intervals
          WHERE user_id = ?1 AND start_at < ?3
@@ -256,7 +287,13 @@ fn intervalli_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::
     )?;
     let rows = statement.query_map(
         (user.0, range.start.to_rfc3339(), range.end.to_rfc3339()),
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        },
     )?;
     let mut output = Vec::new();
     for row in rows {
@@ -267,7 +304,7 @@ fn intervalli_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::
         let end = end_at
             .map(|s| DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)))
             .transpose()?;
-        output.push(StateInterval{ state, start, end });
+        output.push(StateInterval { state, start, end });
     }
     Ok(output)
 }
@@ -297,7 +334,11 @@ mod tests {
     #[test]
     fn test_posizioni_per_filtra_sul_range() {
         let conn = db_con_utente();
-        for (at, lat, lon) in [(utc(11), 45.0, 7.0), (utc(12), 45.5, 7.0), (utc(23), 46.0, 7.0)] {
+        for (at, lat, lon) in [
+            (utc(11), 45.0, 7.0),
+            (utc(12), 45.5, 7.0),
+            (utc(23), 46.0, 7.0),
+        ] {
             conn.execute(
                 "INSERT INTO positions (user_id, at, lat, lon) VALUES (1, ?1, ?2, ?3)",
                 (at.to_rfc3339(), lat, lon),
