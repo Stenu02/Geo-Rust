@@ -1,0 +1,13 @@
+[package]
+name = "geo-net"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+geo-core = { path = "../geo-core" }
+geo-protocol = { path = "../geo-protocol" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

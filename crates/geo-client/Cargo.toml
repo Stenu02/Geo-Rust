@@ -19,6 +19,7 @@ tui = ["dep:ratatui", "dep:crossterm"]
 [dependencies]
 geo-core = { path = "../geo-core" }
 geo-protocol = { path = "../geo-protocol" }
+geo-net = { path = "../geo-net" }
 tokio = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
