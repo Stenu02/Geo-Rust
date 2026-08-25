@@ -1,12 +1,11 @@
-//! Il dialogo con un singolo client, dall'handshake alla chiusura.
-//!
-//! Descrive la FORMA della conversazione: chi sta parlando, quali messaggi
-//! arrivano, cosa si risponde. Non sa come si salva un dato ne' come si instrada
-//! un messaggio: quelle cose vivono in storage, registry e admin.
-//!
-//! Le risposte sono ancora cablate. I valori inventati stanno in `stub`.
+//! Ogni connessione accettata dal server diventa qui un task a se' stante:
+//! `handle` fa l'handshake, poi smista verso `trucker_loop` o `admin_loop` a
+//! seconda del ruolo dichiarato. I due cicli leggono un messaggio alla volta e
+//! rispondono, appoggiandosi a `storage` per il database e a `registry` per
+//! sapere e aggiornare chi e' collegato — non fanno mai questo lavoro da soli.
 
 use crate::auth;
+use crate::registry::Registry;
 use crate::storage::{StorageHandle, UsernameTaken};
 use crate::stub;
 use chrono::Utc;
@@ -21,51 +20,61 @@ use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
 
-/// La connessione con il framing gia' applicato: si legge e si scrive per messaggi
-/// interi, non per byte.
+
 type Wire = Framed<TcpStream, LengthDelimitedCodec>;
 
 /// Quanto si attende il primo frame prima di chiudere.
-///
-/// Senza questo limite un client che si collega e tace terrebbe occupato un task
-/// per sempre, e bastano poche connessioni simili per esaurire le risorse.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Gestisce una singola connessione fino alla sua chiusura.
+// Gestisce una singola connessione fino alla sua chiusura.
+// Funzione chiamata in lib, per ogni connessione accettata
 pub async fn handle(
     stream: TcpStream,
     shutdown: CancellationToken,
     storage: StorageHandle,
+    registry: Registry,
 ) -> anyhow::Result<()> {
+
     let peer = stream.peer_addr()?;
     let mut wire = Framed::new(stream, frame_codec());
 
-    // Se l'handshake non va a buon fine il client e' gia' stato avvisato:
-    // qui resta solo da chiudere.
+    //Chiamata alla funzione handshake
     let Some(hello) = handshake(&mut wire).await? else {
         return Ok(());
     };
 
     tracing::info!(%peer, role = ?hello.role, "handshake completato");
 
+    // Chi si e' autenticato su questa connessione. Vive qui e non dentro il
+    // ciclo perche' serve anche DOPO, per la chiusura ordinata.
+    let mut sessione: Option<(UserId, String)> = None;
+
     // Il ruolo dichiarato nell'handshake decide come vanno letti tutti i frame
     // successivi: gli stessi byte sono un ClientMessage o un AdminMessage.
     let esito = match hello.role {
-        Role::Trucker => trucker_loop(&mut wire, &shutdown, &storage).await,
-        Role::Admin => admin_loop(&mut wire, &shutdown, &storage).await,
+        Role::Trucker => {
+            trucker_loop(&mut wire, &shutdown, &storage, &registry, &mut sessione).await
+        }
+        Role::Admin => admin_loop(&mut wire, &shutdown, &storage, &registry).await,
     };
+
+
+    if let Some((user, username)) = sessione {
+        let ora = Utc::now();
+        if let Some(t) = registry.on_disconnect(user, ora) {
+            if let Err(e) = storage.apply_transition(user, t.to, t.at).await {
+                tracing::error!(%user, error = %e, "chiusura intervallo fallita");
+            }
+        }
+        registry.unregister(user);
+        tracing::info!(%peer, %username, "camionista scollegato");
+    }
 
     tracing::info!(%peer, "sessione chiusa");
     esito
 }
 
-/// Legge il primo frame, verifica la versione di protocollo e risponde `Welcome`.
-///
-/// Restituisce `None` quando la connessione va chiusa: timeout scaduto, client
-/// che se ne va prima di parlare, oppure versione di protocollo incompatibile.
-///
-/// Il primo frame di ogni connessione e' sempre un `Hello`: MessagePack non porta
-/// con se' il tipo, quindi e' la posizione nel dialogo a dire come interpretarlo.
+
 async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
     let frame = match tokio::time::timeout(HANDSHAKE_TIMEOUT, wire.next()).await {
         Err(_) => {
@@ -78,7 +87,7 @@ async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
 
     let hello: Hello = decode(&frame[..])?;
 
-    // Meglio un errore chiaro adesso che byte interpretati male a meta' sessione.
+    // Controllo sulla struttura Hello
     if hello.protocol_version != PROTOCOL_VERSION {
         tracing::warn!(
             richiesta = hello.protocol_version,
@@ -93,8 +102,7 @@ async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
         return Ok(None);
     }
 
-    // Il saluto ha due forme, una per ciascun interlocutore: il camionista e
-    // l'amministratore leggono enum diversi.
+    // Messaggio di Welcome in base al ruolo
     match hello.role {
         Role::Trucker => {
             send(
@@ -131,15 +139,11 @@ async fn trucker_loop(
     wire: &mut Wire,
     shutdown: &CancellationToken,
     storage: &StorageHandle,
+    registry: &Registry,
+    autenticato: &mut Option<(UserId, String)>,
 ) -> anyhow::Result<()> {
-    // Chi e' collegato su questa sessione. Resta None finche' non arriva un login
-    // valido. E' una variabile locale, non uno stato condiviso: ogni connessione
-    // ha la propria e muore con lei.
-    let mut autenticato: Option<(UserId, String)> = None;
-
     loop {
-        // Il frame si estrae qui e si usa sotto: chiamare `send` dentro il ramo
-        // terrebbe `wire` prestato due volte.
+        // Il frame si estrae qui
         let frame = tokio::select! {
             _ = shutdown.cancelled() => break,
             frame = wire.next() => match frame {
@@ -150,6 +154,7 @@ async fn trucker_loop(
         };
 
         match decode::<ClientMessage>(&frame[..])? {
+            //Registrazione
             ClientMessage::Register { username, password } => {
                 let phc = auth::hash_password_async(password).await?;
                 match storage.create_user(&username, &phc, "trucker").await {
@@ -167,8 +172,6 @@ async fn trucker_loop(
                         )
                         .await?;
                     }
-                    // L'errore vero finisce nel log, al client va un messaggio
-                    // generico: i dettagli del database non escono da qui.
                     Err(e) => {
                         tracing::error!(%username, error = %e, "registrazione fallita");
                         send(
@@ -182,10 +185,9 @@ async fn trucker_loop(
                     }
                 }
             }
-
+            //Login
             ClientMessage::Login { username, password } => {
-                // Una sessione non deve poter cambiare identita' a meta' strada:
-                // le posizioni finirebbero attribuite all'utente sbagliato.
+                //Già autenticato
                 if autenticato.is_some() {
                     send(
                         wire,
@@ -198,9 +200,6 @@ async fn trucker_loop(
                     continue;
                 }
 
-                // Si verifica SEMPRE, anche quando l'utente non esiste: in quel
-                // caso contro PHC_FITTIZIO. Cosi' il tempo di risposta non
-                // dipende dall'esistenza dell'utente.
                 let (utente, phc) = match storage.find_user(&username).await? {
                     Some((u, p)) => (Some(u), p),
                     None => (None, PHC_FITTIZIO.to_string()),
@@ -210,7 +209,17 @@ async fn trucker_loop(
                 match (utente, corretta) {
                     (Some(user), true) => {
                         tracing::info!(%username, %user, "login effettuato");
-                        autenticato = Some((user, username.clone()));
+                        let (_posta, _annunci) = registry.register(user, username.clone());
+
+                        // SCONNESSO -> FERMO. La transizione va scritta subito:
+                        // e' l'apertura del primo intervallo di questa sessione,
+                        // e senza di essa le analisi avrebbero un buco.
+                        let ora = Utc::now();
+                        if let Some(t) = registry.on_login(user, ora) {
+                            storage.apply_transition(user, t.to, t.at).await?;
+                        }
+
+                        *autenticato = Some((user, username.clone()));
                         send(wire, &ServerMessage::LoginOk { user, username }).await?;
                     }
                     // Stesso identico messaggio nei due casi: non si rivela se sia
@@ -230,24 +239,39 @@ async fn trucker_loop(
             }
 
             ClientMessage::PositionUpdate { at, position } => {
-                let Some((user, _)) = &autenticato else {
+                let Some(user) = autenticato.as_ref().map(|(u, _)| *u) else {
                     send(wire, &non_autenticato()).await?;
                     continue;
                 };
-                // Lo stato e' ancora sempre lo stesso: la macchina a stati non e'
-                // collegata. Il resto del ramo e' pero' gia' vero.
+
+                // Una coordinata assurda non deve entrare nello storico
+                if !position.is_valid() {
+                    send(
+                        wire,
+                        &ServerMessage::Error {
+                            code: ErrorCode::InvalidPosition,
+                            detail: "coordinate fuori intervallo".into(),
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+
                 tracing::debug!(%user, %at, lat = position.lat, lon = position.lon, "posizione");
-                send(
-                    wire,
-                    &ServerMessage::PositionAck {
-                        state: UserState::Stopped,
-                    },
-                )
-                .await?;
+                storage.save_position(user, at, position).await?;
+
+                // La macchina a stati decide se questa posizione e' un cambio.
+                if let Some(t) = registry.on_position(user, at, position) {
+                    storage.apply_transition(user, t.to, t.at).await?;
+                }
+
+              
+                let state = registry.state_of(user).unwrap_or(UserState::Stopped);
+                send(wire, &ServerMessage::PositionAck { state }).await?;
             }
 
             ClientMessage::Chat { text } => {
-                let Some((user, _)) = &autenticato else {
+                let Some((user, _)) = autenticato.as_ref() else {
                     send(wire, &non_autenticato()).await?;
                     continue;
                 };
@@ -269,6 +293,7 @@ async fn admin_loop(
     wire: &mut Wire,
     shutdown: &CancellationToken,
     storage: &StorageHandle,
+    registry: &Registry,
 ) -> anyhow::Result<()> {
     loop {
         let frame = tokio::select! {
@@ -295,7 +320,7 @@ async fn admin_loop(
                 send(
                     wire,
                     &AdminReply::Fleet {
-                        entries: stub::flotta(),
+                        entries: registry.fleet(),
                     },
                 )
                 .await?;

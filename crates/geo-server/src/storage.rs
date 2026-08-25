@@ -55,6 +55,25 @@ enum Command {
         range: TimeRange,
         reply: oneshot::Sender<anyhow::Result<Vec<StateInterval>>>,
     },
+    /// Salva una posizione ricevuta da un camionista.
+    SavePosition {
+        user: UserId,
+        at: DateTime<Utc>,
+        position: Position,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Chiude l'intervallo di stato aperto e ne apre uno nuovo.
+    ApplyTransition {
+        user: UserId,
+        to: UserState,
+        at: DateTime<Utc>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Chiude gli intervalli rimasti aperti da un'esecuzione precedente.
+    CloseDangling {
+        at: DateTime<Utc>,
+        reply: oneshot::Sender<anyhow::Result<usize>>,
+    },
 }
 
 /// Da qui si parla con il database. E' clonabile: ogni sessione ne tiene
@@ -150,6 +169,51 @@ impl StorageHandle {
         rx.await?
     }
 
+    /// Salva una posizione nello storico.
+    pub async fn save_position(
+        &self,
+        user: UserId,
+        at: DateTime<Utc>,
+        position: Position,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::SavePosition {
+            user,
+            at,
+            position,
+            reply,
+        })
+        .await?;
+        rx.await?
+    }
+
+    /// Registra un cambio di stato: chiude l'intervallo aperto a `at` e ne apre
+    /// uno nuovo nello stato `to`, sempre a `at`.
+    pub async fn apply_transition(
+        &self,
+        user: UserId,
+        to: UserState,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::ApplyTransition {
+            user,
+            to,
+            at,
+            reply,
+        })
+        .await?;
+        rx.await?
+    }
+
+    /// Chiude gli intervalli lasciati aperti da un'esecuzione precedente e
+    /// restituisce quanti ne ha chiusi. Da chiamare all'avvio.
+    pub async fn close_dangling(&self, at: DateTime<Utc>) -> anyhow::Result<usize> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::CloseDangling { at, reply }).await?;
+        rx.await?
+    }
+
     /// Mette un comando in coda.
     ///
     /// Fallisce solo se l'attore non c'e' piu': succede allo spegnimento, ed e'
@@ -187,6 +251,25 @@ fn esegui(conn: &Connection, cmd: Command) {
         }
         Command::IntervalsFor { user, range, reply } => {
             let _ = reply.send(intervalli_per(conn, user, range));
+        }
+        Command::SavePosition {
+            user,
+            at,
+            position,
+            reply,
+        } => {
+            let _ = reply.send(salva_posizione(conn, user, at, position));
+        }
+        Command::ApplyTransition {
+            user,
+            to,
+            at,
+            reply,
+        } => {
+            let _ = reply.send(applica_transizione(conn, user, to, at));
+        }
+        Command::CloseDangling { at, reply } => {
+            let _ = reply.send(chiudi_intervalli_pendenti(conn, at));
         }
     }
 }
@@ -388,4 +471,67 @@ mod tests {
         assert_eq!(iv[1].state, UserState::Stopped);
         assert_eq!(iv[1].end, None); // l'intervallo aperto resta aperto
     }
+}
+
+/// Inserisce una posizione nello storico.
+///
+/// Gli istanti vanno in ISO 8601 UTC, lo stesso formato che `posizioni_per` si
+/// aspetta di rileggere: le due funzioni vanno tenute d'accordo.
+fn salva_posizione(
+    conn: &Connection,
+    user: UserId,
+    at: DateTime<Utc>,
+    position: Position,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO positions (user_id, at, lat, lon) VALUES (?1, ?2, ?3, ?4)",
+        (user.0, at.to_rfc3339(), position.lat, position.lon),
+    )?;
+    Ok(())
+}
+
+/// Chiude l'intervallo aperto dell'utente e ne apre uno nuovo, entrambi a `at`.
+///
+/// Le due istruzioni stanno in una TRANSAZIONE perche' devono valere insieme:
+/// se passasse solo la chiusura, l'utente resterebbe senza intervallo aperto e
+/// il suo stato successivo diventerebbe irrecuperabile; se passasse solo
+/// l'apertura, l'indice unico dello schema rifiuterebbe il secondo aperto.
+///
+/// Chiudere zero intervalli e' normale: succede al primo login di un utente,
+/// che non ne ha ancora nessuno.
+fn applica_transizione(
+    conn: &Connection,
+    user: UserId,
+    to: UserState,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let quando = at.to_rfc3339();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE state_intervals SET end_at = ?2
+         WHERE user_id = ?1 AND end_at IS NULL",
+        (user.0, &quando),
+    )?;
+    tx.execute(
+        "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+         VALUES (?1, ?2, ?3, NULL)",
+        (user.0, to.as_db_str(), &quando),
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Chiude tutti gli intervalli rimasti aperti, e restituisce quanti erano.
+///
+/// Serve dopo un arresto anomalo: se il server muore mentre dieci camionisti
+/// sono collegati, restano dieci intervalli senza fine, e ogni analisi
+/// successiva li conterebbe fino a "adesso". Si chiudono all'istante di avvio:
+/// non sappiamo quando il server sia morto davvero, e questa e' la scelta
+/// conservativa piu' semplice da spiegare.
+fn chiudi_intervalli_pendenti(conn: &Connection, at: DateTime<Utc>) -> anyhow::Result<usize> {
+    let n = conn.execute(
+        "UPDATE state_intervals SET end_at = ?1 WHERE end_at IS NULL",
+        [at.to_rfc3339()],
+    )?;
+    Ok(n)
 }

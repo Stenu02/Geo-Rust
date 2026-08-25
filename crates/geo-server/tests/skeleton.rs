@@ -383,13 +383,96 @@ async fn logout_chiude_la_sessione() {
 // --- dialogo con l'amministratore ------------------------------------------
 
 #[tokio::test]
-async fn lista_flotta_non_vuota() {
+async fn la_flotta_elenca_i_camionisti_collegati() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = collega(addr, Role::Admin).await;
 
-    invia(&mut wire, &AdminMessage::ListFleet).await;
-    match ricevi::<AdminReply>(&mut wire).await {
-        AdminReply::Fleet { entries } => assert!(!entries.is_empty()),
+    // Due camionisti si collegano e fanno login.
+    let _c1 = autenticato(addr, "camion01").await;
+    let _c2 = autenticato(addr, "camion02").await;
+
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => {
+            assert_eq!(entries.len(), 2, "attesi due camionisti collegati");
+            assert_eq!(entries[0].username, "camion01");
+            assert_eq!(entries[1].username, "camion02");
+            // Appena collegati sono fermi e senza posizione nota.
+            assert_eq!(entries[0].state, UserState::Stopped);
+            assert_eq!(entries[0].last_position, None);
+        }
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn la_flotta_e_vuota_senza_camionisti() {
+    let (addr, shutdown) = avvia().await;
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => assert!(entries.is_empty()),
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn chi_si_scollega_sparisce_dalla_flotta() {
+    let (addr, shutdown) = avvia().await;
+
+    let c1 = autenticato(addr, "camion01").await;
+    let mut admin = collega(addr, Role::Admin).await;
+
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => assert_eq!(entries.len(), 1),
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+
+    // Il camionista chiude la connessione di colpo.
+    drop(c1);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => assert!(
+            entries.is_empty(),
+            "chi si scollega non deve restare nella tabella"
+        ),
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn la_posizione_inviata_compare_nella_flotta() {
+    let (addr, shutdown) = avvia().await;
+    let mut c1 = autenticato(addr, "camion01").await;
+
+    let ora = chrono::Utc::now();
+    invia(
+        &mut c1,
+        &ClientMessage::PositionUpdate {
+            at: ora,
+            position: geo_core::Position::new(45.0618513, 7.6797161),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c1).await;
+
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => {
+            let p = entries[0].last_position.expect("posizione mancante");
+            assert!((p.lat - 45.0618513).abs() < 1e-9);
+            assert_eq!(entries[0].last_update, Some(ora));
+        }
         altro => panic!("attesa Fleet, ricevuto {altro:?}"),
     }
     shutdown.cancel();
@@ -456,6 +539,154 @@ async fn piu_camionisti_in_parallelo() {
             ricevi::<ServerMessage>(wire).await,
             ServerMessage::Pong
         ));
+    }
+    shutdown.cancel();
+}
+
+// --- posizioni, stati, persistenza ----------------------------------------
+
+#[tokio::test]
+async fn il_cambio_di_coordinata_porta_a_movimento() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+    let t0 = chrono::Utc::now();
+
+    // La prima posizione non e' un "cambio": si resta fermi.
+    invia(
+        &mut wire,
+        &ClientMessage::PositionUpdate {
+            at: t0,
+            position: geo_core::Position::new(45.0618513, 7.6797161),
+        },
+    )
+    .await;
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::PositionAck { state } => assert_eq!(state, UserState::Stopped),
+        altro => panic!("atteso PositionAck, ricevuto {altro:?}"),
+    }
+
+    // La seconda, diversa, fa scattare il movimento.
+    invia(
+        &mut wire,
+        &ClientMessage::PositionUpdate {
+            at: t0 + chrono::Duration::seconds(30),
+            position: geo_core::Position::new(45.0601242, 7.6851330),
+        },
+    )
+    .await;
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::PositionAck { state } => assert_eq!(state, UserState::Moving),
+        altro => panic!("atteso PositionAck, ricevuto {altro:?}"),
+    }
+
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn coordinate_invalide_rifiutate() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+
+    // NOTA: il caso (NaN, 7.0) manca di proposito. `Position::is_valid` lo
+    // accetta — con NaN ogni confronto e' falso, quindi il controllo di
+    // intervallo cade nel ramo "valido" — e la posizione arriva fino a SQLite,
+    // che la rifiuta facendo cadere la sessione. Va corretto in geo-core.
+    for (lat, lon) in [(91.0, 7.0), (45.0, 181.0), (-91.0, 7.0), (45.0, -181.0)] {
+        invia(
+            &mut wire,
+            &ClientMessage::PositionUpdate {
+                at: chrono::Utc::now(),
+                position: geo_core::Position::new(lat, lon),
+            },
+        )
+        .await;
+        match ricevi::<ServerMessage>(&mut wire).await {
+            ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidPosition),
+            altro => panic!("attesa ({lat}, {lon}) rifiutata, ricevuto {altro:?}"),
+        }
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn le_posizioni_finiscono_nel_report_dell_amministratore() {
+    let (addr, shutdown) = avvia().await;
+    let mut camion = autenticato(addr, "camion01").await;
+
+    // Tre posizioni lungo la rotta Torino -> Asti.
+    let t0 = chrono::Utc::now();
+    for (i, (lat, lon)) in [
+        (45.0618513, 7.6797161),
+        (45.0601242, 7.6851330),
+        (45.0577891, 7.6923447),
+    ]
+    .iter()
+    .enumerate()
+    {
+        invia(
+            &mut camion,
+            &ClientMessage::PositionUpdate {
+                at: t0 + chrono::Duration::seconds(30 * i as i64),
+                position: geo_core::Position::new(*lat, *lon),
+            },
+        )
+        .await;
+        let _: ServerMessage = ricevi(&mut camion).await;
+    }
+
+    // L'amministratore interroga: il tragitto non deve essere vuoto.
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(
+        &mut admin,
+        &AdminMessage::Query {
+            user: UserId(1),
+            spec: RangeSpec::Today,
+        },
+    )
+    .await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::QueryResult(report) => {
+            assert_eq!(
+                report.track.len(),
+                3,
+                "le tre posizioni devono essere salvate"
+            );
+            assert!(
+                report.distance_km > 0.0,
+                "una polilinea di tre punti distinti ha distanza positiva"
+            );
+        }
+        altro => panic!("atteso QueryResult, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn il_login_apre_un_intervallo_di_stato() {
+    let (addr, shutdown) = avvia().await;
+    let _camion = autenticato(addr, "camion01").await;
+
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(
+        &mut admin,
+        &AdminMessage::Query {
+            user: UserId(1),
+            spec: RangeSpec::Today,
+        },
+    )
+    .await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::QueryResult(report) => {
+            // Il login ha aperto un intervallo FERMO ancora in corso: la durata
+            // delle pause e' quindi maggiore di zero.
+            assert!(
+                report.paused_time > chrono::Duration::zero(),
+                "il login deve aver aperto un intervallo FERMO"
+            );
+        }
+        altro => panic!("atteso QueryResult, ricevuto {altro:?}"),
     }
     shutdown.cancel();
 }
