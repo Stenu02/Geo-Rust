@@ -1,8 +1,8 @@
 //! TUI camionista
 //! interfaccia a terminale divisa in 3 sezioni:
-//! - pannello di stato (mostra le ultime coordinate inviate e lo stato di connessione)
+//! - pannello di stato (coordinate e connessione)
 //! - cronologia chat (messaggi in entrata e uscita)
-//! - barra di testo (per scrivere all'admin)
+//! - barra di testo (input verso l'admin)
 
 use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyEventKind},
@@ -14,7 +14,6 @@ use geo_net::{connection::Command, events::Event as NetEvent};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
@@ -39,15 +38,13 @@ impl ClientUi {
         }
     }
 
-    /// avvia il loop di rendering asincrono e la gestione degli eventi
-    /// si interrompe solo quando l'utente preme esc
+    /// gestisce il rendering e ascolta concorrentemente rete e tastiera
     pub async fn run(
         &mut self,
-        mut command_tx: mpsc::Sender<Command>,
+        command_tx: mpsc::Sender<Command>,
         mut event_rx: mpsc::Receiver<NetEvent>,
         mut pos_rx: watch::Receiver<Option<Position>>,
     ) -> anyhow::Result<()> {
-        // setup terminale
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
@@ -57,10 +54,6 @@ impl ClientUi {
         loop {
             // disegno dell'interfaccia
             terminal.draw(|f| {
-                // suddivide lo schermo in tre righe:
-                // 1. stato (3 righe fisse)
-                // 2. chat (tutto lo spazio rimanente)
-                // 3. input (3 righe fisse)
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -70,10 +63,9 @@ impl ClientUi {
                     ].as_ref())
                     .split(f.size());
 
-                // stato sensore
                 let pos_str = match &self.last_pos {
                     Some(p) => format!("Lat: {:.5}, Lon: {:.5}", p.lat, p.lon),
-                    None => "In attesa del primo campionamento...".to_string(),
+                    None => "In attesa...".to_string(),
                 };
 
                 let state_str = match self.current_state {
@@ -84,47 +76,52 @@ impl ClientUi {
 
                 let status_text = format!("Stato: {}.\nPosizione: {}.", state_str, pos_str);
                 let status_p = Paragraph::new(status_text)
-                    .block(Block::default().title(" Stato Sensore ").borders(Borders::ALL));
+                    .block(Block::default().title(" Sensore ").borders(Borders::ALL));
                 f.render_widget(status_p, chunks[0]);
 
-                // chat
                 // unisce lo storico della chat e lo mostra al centro
                 let chat_text = self.chat_history.join("\n");
                 let chat_p = Paragraph::new(chat_text)
-                    .block(Block::default().title(" Chat (R14) ").borders(Borders::ALL))
+                    .block(Block::default().title(" Chat ").borders(Borders::ALL))
                     .wrap(Wrap { trim: true });
                 f.render_widget(chat_p, chunks[1]);
 
-                // barra di testo
                 // mostra il testo digitato con un finto cursore visivo
                 let input_text = format!("> {}█", self.input);
                 let input_p = Paragraph::new(input_text)
-                    .block(Block::default().title(" Invia Messaggio ").borders(Borders::ALL));
+                    .block(Block::default().title(" Invia ").borders(Borders::ALL));
                 f.render_widget(input_p, chunks[2]);
             })?;
 
             // gestione concorrente degli eventi (rete o tastiera)
             tokio::select! {
-                // evento di rete (messaggio ricevuto dal server)
                 net_event = event_rx.recv() => {
                     if let Some(ev) = net_event {
                         match ev {
+                            NetEvent::Connected => {
+                                self.chat_history.push("[SISTEMA] Connesso al server.".into());
+                            }
+                            NetEvent::LoggedIn { username } => {
+                                self.chat_history.push(format!("[SISTEMA] Loggato come {}.", username));
+                            }
                             NetEvent::ChatReceived { text, broadcast, at } => {
                                 let prefix = if broadcast { "[BROADCAST]" } else { "[DIRETTO]" };
-                                self.chat_history.push(format!("{} Admin: {}", prefix, text));
+                                let time = at.with_timezone(&chrono::Local).format("%H:%M:%S");
+                                self.chat_history.push(format!("{} [{}] Admin: {}.", prefix, time, text));
                             }
                             NetEvent::PositionAck { state } => {
-                                // aggiorna l'interfaccia con lo stato calcolato dal server.
+                                // aggiorna l'interfaccia con lo stato calcolato dal server
                                 self.current_state = state;
                             }
                             NetEvent::Disconnected { reason } => {
                                 self.current_state = UserState::Disconnected;
-                                self.chat_history.push(format!("[SISTEMA] Disconnesso: {}", reason));
+                                self.chat_history.push(format!("[SISTEMA] {}.", reason));
                             }
-                            _ => {}
+                            NetEvent::ServerError { code, detail } => {
+                                self.chat_history.push(format!("[ERRORE] {:?}: {}.", code, detail));
+                            }
                         }
                     } else {
-                        // se il canale è chiuso, esce dal loop
                         break;
                     }
                 }
@@ -134,8 +131,7 @@ impl ClientUi {
                     self.last_pos = *pos_rx.borrow();
                 }
 
-                // evento da tastiera (deve essere in un thread separato spawn_blocking
-                // per non bloccare l'executor di tokio mentre aspetta che l'utente scriva)
+                // thread separato per l'input: evita di bloccare la ricezione della rete in attesa della tastiera
                 input_event = tokio::task::spawn_blocking(|| {
                     if event::poll(Duration::from_millis(100)).unwrap_or(false) {
                         event::read().ok()
@@ -147,16 +143,13 @@ impl ClientUi {
                         // gestisce solo la pressione dei tasti, ignorando il rilascio
                         if key.kind == KeyEventKind::Press {
                             match key.code {
-                                KeyCode::Esc => break, // termina il programma
-                                KeyCode::Char(c) => self.input.push(c), // scrive il carattere
-                                KeyCode::Backspace => { self.input.pop(); } // cancella l'ultimo carattere
+                                KeyCode::Esc => break,
+                                KeyCode::Char(c) => self.input.push(c),
+                                KeyCode::Backspace => { self.input.pop(); }
                                 KeyCode::Enter => {
-                                    // invia il messaggio
                                     if !self.input.is_empty() {
                                         let msg = self.input.clone();
                                         self.chat_history.push(format!("Tu: {}", msg));
-
-                                        // usa il clone del canale per comunicare a geo-net di inviare i byte
                                         let _ = command_tx.send(Command::Chat { text: msg }).await;
                                         self.input.clear();
                                     }

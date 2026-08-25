@@ -2,7 +2,7 @@ use clap::Parser;
 use geo_client::simulator::{PositionSimulator, Strategy};
 use std::path::PathBuf;
 use std::time::Duration;
-use geo_net::{connection::{ClientHandle, Command}, events::Event};
+use geo_net::connection::{ClientHandle, Command};
 use tokio::sync::watch;
 
 /// argomenti da riga di comando per il client del camionista
@@ -22,11 +22,11 @@ struct Args {
     #[arg(long, env = "GEO_TRACK")]
     track: Option<PathBuf>,
 
-    /// fattore di scala temporale (default 1 = 30s)
+    /// fattore di accelerazione del tempo (default 1 = scala reale)
     #[arg(long, default_value_t = 1)]
     time_scale: u32,
 
-    /// modalità senza interfaccia testuale per test di carico e flotta
+    /// disabilita la TUI per test di carico
     #[arg(long, default_value_t = false)]
     headless: bool,
 }
@@ -48,11 +48,10 @@ async fn main() -> anyhow::Result<()> {
         server = %args.server,
         time_scale = args.time_scale,
         headless = args.headless,
-        "avvio client camionista"
+        "Avvio client camionista"
     );
 
-    // connessione al server tramite geo-net
-    let mut handle = ClientHandle::connect(&args.server, args.username, args.password).await?;
+    let handle = ClientHandle::connect(args.server, args.username, args.password).await?;
     tracing::info!("Connessione al server stabilita.");
 
     let scale = args.time_scale.max(1);
@@ -60,20 +59,19 @@ async fn main() -> anyhow::Result<()> {
     let mut ticker = tokio::time::interval(interval_duration);
     let mut elapsed_secs = 0i64;
 
-    // estrae i canali per la rete
     let command_tx = handle.command_tx.clone();
     let event_rx = handle.event_rx;
 
-    // canale per inviare l'aggiornamento locale delle coordinate alla UI
+    // canale watch: permette al loop asincrono di aggiornare l'interfaccia
+    // con le ultime coordinate calcolate senza bloccarsi
     let (pos_tx, pos_rx) = watch::channel(None);
 
-    // invio periodico delle posizioni, gira in background indipendentemente dalla UI
+    // task in background per l'emissione delle posizioni
     tokio::spawn(async move {
         loop {
             ticker.tick().await;
             let pos = simulator.next_position(elapsed_secs);
 
-            // in headless logga l'invio
             if args.headless {
                 tracing::info!(elapsed_secs, lat = pos.lat, lon = pos.lon, "Invio posizione.");
             }
@@ -82,16 +80,14 @@ async fn main() -> anyhow::Result<()> {
             let _ = pos_tx.send(Some(pos));
 
             if command_tx.send(Command::PositionUpdate { position: pos }).await.is_err() {
-                // se il canale è chiuso, il task viene fermato
-                break;
+                break; // rete irraggiungibile o programma terminato
             }
             elapsed_secs += 30;
         }
     });
 
     if args.headless {
-        // resta in ascolto degli eventi di rete e li logga su terminale
-        let mut event_rx = event_rx; // riprende possesso del receiver
+        let mut event_rx = event_rx;
         loop {
             if let Some(ev) = event_rx.recv().await {
                 tracing::info!("Evento di rete: {:?}.", ev);
