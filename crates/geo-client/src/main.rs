@@ -2,6 +2,8 @@ use clap::Parser;
 use geo_client::simulator::{PositionSimulator, Strategy};
 use std::path::PathBuf;
 use std::time::Duration;
+use geo_net::{connection::{ClientHandle, Command}, events::Event};
+use tokio::sync::watch;
 
 /// argomenti da riga di comando per il client del camionista
 #[derive(Parser)]
@@ -49,23 +51,73 @@ async fn main() -> anyhow::Result<()> {
         "avvio client camionista"
     );
 
-    // intervallo di campionamento scalato per accelerare l'esecuzione nei test
+    // connessione al server tramite geo-net
+    let mut handle = ClientHandle::connect(&args.server, args.username, args.password).await?;
+    tracing::info!("Connessione al server stabilita.");
+
     let scale = args.time_scale.max(1);
     let interval_duration = Duration::from_secs(30) / scale;
     let mut ticker = tokio::time::interval(interval_duration);
     let mut elapsed_secs = 0i64;
 
-    // ciclo temporaneo per verificare la generazione delle coordinate
-    for _ in 0..5 {
-        ticker.tick().await;
-        let pos = simulator.next_position(elapsed_secs);
-        tracing::info!(
-            elapsed_secs = elapsed_secs,
-            lat = pos.lat,
-            lon = pos.lon,
-            "Campionamento posizione"
-        );
-        elapsed_secs += 30;
+    // estrae i canali per la rete
+    let command_tx = handle.command_tx.clone();
+    let event_rx = handle.event_rx;
+
+    // canale per inviare l'aggiornamento locale delle coordinate alla UI
+    let (pos_tx, pos_rx) = watch::channel(None);
+
+    // invio periodico delle posizioni, gira in background indipendentemente dalla UI
+    tokio::spawn(async move {
+        loop {
+            ticker.tick().await;
+            let pos = simulator.next_position(elapsed_secs);
+
+            // in headless logga l'invio
+            if args.headless {
+                tracing::info!(elapsed_secs, lat = pos.lat, lon = pos.lon, "Invio posizione.");
+            }
+
+            // comunica la nuova posizione alla UI
+            let _ = pos_tx.send(Some(pos));
+
+            if command_tx.send(Command::PositionUpdate { position: pos }).await.is_err() {
+                // se il canale è chiuso, il task viene fermato
+                break;
+            }
+            elapsed_secs += 30;
+        }
+    });
+
+    if args.headless {
+        // resta in ascolto degli eventi di rete e li logga su terminale
+        let mut event_rx = event_rx; // riprende possesso del receiver
+        loop {
+            if let Some(ev) = event_rx.recv().await {
+                tracing::info!("Evento di rete: {:?}.", ev);
+            } else {
+                tracing::error!("Canale eventi chiuso, uscita.");
+                break;
+            }
+        }
+    } else {
+        // avvia l'interfaccia grafica
+        #[cfg(feature = "tui")]
+        {
+            use geo_client::tui::ClientUi;
+            let mut ui = ClientUi::new();
+
+            // per permettere alla TUI di inviare comandi, utilizza un clone del sender
+            if let Err(e) = ui.run(handle.command_tx.clone(), event_rx, pos_rx).await {
+                tracing::error!("Errore nell'esecuzione della TUI: {}.", e);
+            }
+        }
+
+        #[cfg(not(feature = "tui"))]
+        {
+            tracing::warn!("Il client è stato compilato senza la feature 'tui'. Esecuzione terminata.");
+        }
     }
+
     Ok(())
 }
