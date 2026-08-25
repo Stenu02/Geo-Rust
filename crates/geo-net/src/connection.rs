@@ -10,6 +10,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use chrono::Utc;
 
 use super::events::Event;
 
@@ -86,16 +87,46 @@ async fn run_connection(mut framed: ClientFramed, mut command_rx: mpsc::Receiver
         tokio::select! {
             cmd = command_rx.recv() => {
                 match cmd {
-                    Some(_command) => {
-                        todo!("traduzione Command -> ClientMessage")
+                    Some(command) => {
+                        match command {
+                            Command::PositionUpdate { position } => {
+                                let msg = ClientMessage::PositionUpdate { at: Utc::now(), position };
+                                let _ = send_msg(&mut framed, &msg).await;
+                            }
+                            Command::Chat { text } => {
+                                let msg = ClientMessage::Chat { text };
+                                let _ = send_msg(&mut framed, &msg).await;
+                            }
+                            Command::Logout => {
+                                let _ = send_msg(&mut framed, &ClientMessage::Logout).await;
+                                break;
+                            }
+                        }
                     }
-                    None => break, // main.rs ha rilasciato il Sender, nessuno manderà più comandi
+                    None => break, // rilasciato il Sender, nessuno manderà più comandi
                 }
             }
             frame = framed.next() => {
                 match frame {
-                    Some(Ok(_bytes)) => {
-                        todo!("decode del frame e traduzione ServerMessage -> Event")
+                    Some(Ok(bytes)) => {
+                        if let Ok(msg) = decode::<ServerMessage>(&bytes) {
+                            match msg {
+                                ServerMessage::PositionAck { state } => {
+                                    let event = Event::PositionAck { state };
+                                    let _ = event_tx.send(event).await;
+                                }
+                                ServerMessage::Chat { text, broadcast, at } => {
+                                    let event = Event::ChatReceived { text, broadcast, at: Utc::now() };
+                                    let _ = event_tx.send(event).await;
+                                }
+                                ServerMessage::Error { code, detail } => {
+                                    let event = Event::ServerError { code, detail };
+                                    let _ = event_tx.send(event).await;
+                                }
+                                _ => {}
+                            }
+                        }
+
                     }
                     _ => {
                         let _ = event_tx.send(Event::Disconnected { reason: "Connessione persa".into() }).await;
