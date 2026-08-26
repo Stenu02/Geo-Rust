@@ -23,7 +23,9 @@ type Wire = Framed<TcpStream, LengthDelimitedCodec>;
 fn config() -> ServerConfig {
     ServerConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
-        db_path: PathBuf::from("test.db"),
+        // DB in memoria, privato per ogni server: i test girano in parallelo e un
+        // file condiviso li farebbe bloccare a vicenda sul lock SQLite.
+        db_path: PathBuf::from(":memory:"),
         log_path: PathBuf::from("test.csv"),
         time_scale: 1,
     }
@@ -62,6 +64,32 @@ async fn collega(addr: SocketAddr, role: Role) -> Wire {
     // Consuma il Welcome.
     let _ = wire.next().await.expect("nessun welcome").unwrap();
     wire
+}
+
+/// Registra un camionista e fa login: molte prove partono da qui.
+async fn autenticato(addr: SocketAddr, nome: &str) -> Wire {
+    let mut wire = collega(addr, Role::Trucker).await;
+    invia(
+        &mut wire,
+        &ClientMessage::Register {
+            username: nome.into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut wire).await;
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: nome.into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::LoginOk { .. } => wire,
+        altro => panic!("login fallito: {altro:?}"),
+    }
 }
 
 // --- handshake -------------------------------------------------------------
@@ -185,7 +213,7 @@ async fn registrazione_e_login_rispondono() {
 #[tokio::test]
 async fn posizione_riceve_ack_con_stato() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = collega(addr, Role::Trucker).await;
+    let mut wire = autenticato(addr, "camion01").await;
 
     invia(
         &mut wire,
@@ -199,6 +227,129 @@ async fn posizione_riceve_ack_con_stato() {
     match ricevi::<ServerMessage>(&mut wire).await {
         ServerMessage::PositionAck { state } => assert_eq!(state, UserState::Stopped),
         altro => panic!("atteso PositionAck, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+// --- autenticazione ------------------------------------------------------
+
+#[tokio::test]
+async fn posizione_prima_del_login_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = collega(addr, Role::Trucker).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::PositionUpdate {
+            at: chrono::Utc::now(),
+            position: geo_core::Position::new(45.0, 7.0),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::NotAuthenticated),
+        altro => panic!("atteso NotAuthenticated, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn registrazione_duplicata_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+
+    // Stesso nome, seconda volta.
+    invia(
+        &mut wire,
+        &ClientMessage::Register {
+            username: "camion01".into(),
+            password: "altra".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::UsernameTaken),
+        altro => panic!("atteso UsernameTaken, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn password_sbagliata_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = collega(addr, Role::Trucker).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Register {
+            username: "camion01".into(),
+            password: "giusta".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut wire).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "sbagliata".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidCredentials),
+        altro => panic!("atteso InvalidCredentials, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn utente_inesistente_stesso_errore_di_password_errata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = collega(addr, Role::Trucker).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: "mai-registrato".into(),
+            password: "qualunque".into(),
+        },
+    )
+    .await;
+
+    // Deve essere indistinguibile da una password sbagliata: non si rivela
+    // quali username esistono.
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, detail } => {
+            assert_eq!(code, ErrorCode::InvalidCredentials);
+            assert_eq!(detail, "credenziali non valide");
+        }
+        altro => panic!("atteso InvalidCredentials, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn secondo_login_sulla_stessa_sessione_rifiutato() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::NotAuthorized),
+        altro => panic!("atteso NotAuthorized, ricevuto {altro:?}"),
     }
     shutdown.cancel();
 }
