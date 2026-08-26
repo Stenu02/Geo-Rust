@@ -42,6 +42,7 @@ impl ClientUi {
     pub async fn run(
         &mut self,
         command_tx: mpsc::Sender<Command>,
+        manual_pos_tx: mpsc::Sender<Position>, // Sender per catturare l'input manuale
         mut event_rx: mpsc::Receiver<NetEvent>,
         mut pos_rx: watch::Receiver<Option<Position>>,
     ) -> anyhow::Result<()> {
@@ -65,7 +66,7 @@ impl ClientUi {
 
                 let pos_str = match &self.last_pos {
                     Some(p) => format!("Lat: {:.5}, Lon: {:.5}", p.lat, p.lon),
-                    None => "In attesa...".to_string(),
+                    None => "In attesa... (usa /pos lat,lon per input manuale)".to_string(),
                 };
 
                 let state_str = match self.current_state {
@@ -79,11 +80,21 @@ impl ClientUi {
                     .block(Block::default().title(" Sensore ").borders(Borders::ALL));
                 f.render_widget(status_p, chunks[0]);
 
-                // unisce lo storico della chat e lo mostra al centro
+                // unisce lo storico della chat e calcola lo scroll per rimanere in fondo
                 let chat_text = self.chat_history.join("\n");
+                let lines_count = chat_text.lines().count() as u16;
+                let history_height = chunks[1].height.saturating_sub(2); // -2 per i bordi
+
+                let scroll_offset = if lines_count > history_height {
+                    lines_count - history_height
+                } else {
+                    0
+                };
+
                 let chat_p = Paragraph::new(chat_text)
                     .block(Block::default().title(" Chat ").borders(Borders::ALL))
-                    .wrap(Wrap { trim: true });
+                    .wrap(Wrap { trim: true })
+                    .scroll((scroll_offset, 0));
                 f.render_widget(chat_p, chunks[1]);
 
                 // mostra il testo digitato con un finto cursore visivo
@@ -149,8 +160,27 @@ impl ClientUi {
                                 KeyCode::Enter => {
                                     if !self.input.is_empty() {
                                         let msg = self.input.clone();
-                                        self.chat_history.push(format!("Tu: {}", msg));
-                                        let _ = command_tx.send(Command::Chat { text: msg }).await;
+
+                                        // intercetta il comando manuale per la posizione
+                                        if msg.starts_with("/pos ") {
+                                            let coords_str = &msg[5..];
+                                            let parts: Vec<&str> = coords_str.split(',').collect();
+                                            if parts.len() == 2 {
+                                                if let (Ok(lat), Ok(lon)) = (parts[0].trim().parse::<f64>(), parts[1].trim().parse::<f64>()) {
+                                                    let _ = manual_pos_tx.send(Position::new(lat, lon)).await;
+                                                    self.chat_history.push(format!("[SISTEMA] Posizione impostata a ({}, {})", lat, lon));
+                                                } else {
+                                                    self.chat_history.push("[ERRORE] Formato numeri non valido. Usa: /pos lat,lon".to_string());
+                                                }
+                                            } else {
+                                                self.chat_history.push("[ERRORE] Sintassi errata. Usa: /pos lat,lon".to_string());
+                                            }
+                                        } else {
+                                            // invio normale del messaggio di chat
+                                            self.chat_history.push(format!("Tu: {}", msg));
+                                            let _ = command_tx.send(Command::Chat { text: msg }).await;
+                                        }
+
                                         self.input.clear();
                                     }
                                 }

@@ -2,7 +2,9 @@ use clap::Parser;
 use geo_client::simulator::{PositionSimulator, Strategy};
 use std::path::PathBuf;
 use std::time::Duration;
-use geo_net::connection::{ClientHandle, Command};
+use geo_core::Position;
+use geo_net::connection::{ClientHandle, Command, ConnectOptions};
+use geo_protocol::Role;
 use tokio::sync::watch;
 
 /// argomenti da riga di comando per il client del camionista
@@ -18,9 +20,22 @@ struct Args {
     #[arg(long, env = "GEO_PASS")]
     password: String,
 
-    /// percorso del file traccia
+    /// esegue la registrazione prima del login (risolve il blocco sollevato dal revisore)
+    #[arg(long, default_value_t = false)]
+    register: bool,
+
+    // strategie di simulazione
+    /// 1. percorso del file traccia (se usato attiva Strategy::File)
     #[arg(long, env = "GEO_TRACK")]
     track: Option<PathBuf>,
+
+    /// 2. attiva Strategy::Interpolated (es: "45.0,7.0;46.0,7.0")
+    #[arg(long)]
+    interpolated: Option<String>,
+
+    /// 4. attiva Strategy::Random (es: "45.0,7.0;5.0" origin_lat,origin_lon;radius_km)
+    #[arg(long)]
+    random: Option<String>,
 
     /// fattore di accelerazione del tempo (default 1 = scala reale)
     #[arg(long, default_value_t = 1)]
@@ -31,17 +46,46 @@ struct Args {
     headless: bool,
 }
 
+/// helper per il parsing delle coordinate dalle stringhe CLI per Random e Interpolated
+fn parse_pos(s: &str) -> anyhow::Result<Position> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Formato coordinata errato. Usa: lat,lon");
+    }
+    let lat: f64 = parts[0].trim().parse()?;
+    let lon: f64 = parts[1].trim().parse()?;
+    Ok(Position::new(lat, lon))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    // selezione della strategia: da file se fornito, altrimenti manuale
-    let strategy = match args.track {
-        Some(path) => Strategy::File { path },
-        None => Strategy::Manual,
+    // selezione della strategia corretta in base agli argomenti CLI passati
+    let strategy = if let Some(path) = args.track {
+        Strategy::File { path }
+    } else if let Some(interp_str) = args.interpolated {
+        let parts: Vec<&str> = interp_str.split(';').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Formato interpolated errato. Usa: lat1,lon1;lat2,lon2");
+        }
+        let from = parse_pos(parts[0])?;
+        let to = parse_pos(parts[1])?;
+        Strategy::Interpolated { from, to, duration_secs: 600, pauses: vec![] } // durata fissa 10 min per test
+    } else if let Some(rnd_str) = args.random {
+        let parts: Vec<&str> = rnd_str.split(';').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Formato random errato. Usa: lat,lon;raggio_km");
+        }
+        let origin = parse_pos(parts[0])?;
+        let radius_km: f64 = parts[1].trim().parse()?;
+        Strategy::Random { origin, radius_km }
+    } else {
+        Strategy::Manual
     };
-    let mut simulator = PositionSimulator::new(strategy)?;
+
+    let mut simulator = PositionSimulator::new(strategy.clone())?;
 
     tracing::info!(
         user = %args.username,
@@ -51,7 +95,16 @@ async fn main() -> anyhow::Result<()> {
         "Avvio client camionista"
     );
 
-    let handle = ClientHandle::connect(args.server, args.username, args.password).await?;
+    // usa ConnectOptions di geo-net
+    let opts = ConnectOptions {
+        server_addr: args.server.clone(),
+        username: args.username.clone(),
+        password: args.password.clone(),
+        role: Role::Trucker,
+        register: args.register,
+    };
+
+    let handle = ClientHandle::connect(opts).await?;
     tracing::info!("Connessione al server stabilita.");
 
     let scale = args.time_scale.max(1);
@@ -65,24 +118,39 @@ async fn main() -> anyhow::Result<()> {
     // canale watch: permette al loop asincrono di aggiornare l'interfaccia
     // con le ultime coordinate calcolate senza bloccarsi
     let (pos_tx, pos_rx) = watch::channel(None);
+    let is_manual = matches!(strategy, Strategy::Manual);
 
-    // task in background per l'emissione delle posizioni
+    // canale mpsc: cattura l'inserimento manuale delle coordinate dalla TUI
+    let (manual_pos_tx, mut manual_pos_rx) = tokio::sync::mpsc::channel::<Position>(10);
+
+    // task in background per l'emissione delle posizioni e l'ascolto di aggiornamenti manuali
     tokio::spawn(async move {
         loop {
-            ticker.tick().await;
-            let pos = simulator.next_position(elapsed_secs);
+            tokio::select! {
+                // scatta il timer di 30 secondi
+                _ = ticker.tick() => {
+                    let pos = simulator.next_position(elapsed_secs);
 
-            if args.headless {
-                tracing::info!(elapsed_secs, lat = pos.lat, lon = pos.lon, "Invio posizione.");
+                    if args.headless {
+                        tracing::info!(elapsed_secs, lat = pos.lat, lon = pos.lon, "Invio posizione.");
+                    }
+
+                    // comunica la nuova posizione alla UI
+                    let _ = pos_tx.send(Some(pos));
+
+                    if command_tx.send(Command::PositionUpdate { position: pos }).await.is_err() {
+                        break; // rete irraggiungibile o programma terminato
+                    }
+                    elapsed_secs += 30;
+                }
+
+                // l'utente ha digitato "/pos lat,lon" dalla TUI
+                Some(new_pos) = manual_pos_rx.recv() => {
+                    if is_manual {
+                        simulator.set_manual_position(new_pos);
+                    }
+                }
             }
-
-            // comunica la nuova posizione alla UI
-            let _ = pos_tx.send(Some(pos));
-
-            if command_tx.send(Command::PositionUpdate { position: pos }).await.is_err() {
-                break; // rete irraggiungibile o programma terminato
-            }
-            elapsed_secs += 30;
         }
     });
 
@@ -103,8 +171,8 @@ async fn main() -> anyhow::Result<()> {
             use geo_client::tui::ClientUi;
             let mut ui = ClientUi::new();
 
-            // per permettere alla TUI di inviare comandi, utilizza un clone del sender
-            if let Err(e) = ui.run(handle.command_tx.clone(), event_rx, pos_rx).await {
+            // per permettere alla TUI di inviare comandi di chat e coordinate manuali, passa entrambi i Sender
+            if let Err(e) = ui.run(handle.command_tx.clone(), manual_pos_tx, event_rx, pos_rx).await {
                 tracing::error!("Errore nell'esecuzione della TUI: {}.", e);
             }
         }
