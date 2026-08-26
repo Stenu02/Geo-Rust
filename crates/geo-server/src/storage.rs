@@ -69,6 +69,21 @@ enum Command {
         at: DateTime<Utc>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
+    /// Salva un messaggio di chat nello storico.
+    SaveMessage {
+        from_user: Option<UserId>,
+        to_user: Option<UserId>,
+        body: String,
+        at: DateTime<Utc>,
+        delivered: bool,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Prende i messaggi diretti a un utente che non gli sono mai arrivati,
+    /// e li segna come consegnati.
+    TakePending {
+        user: UserId,
+        reply: oneshot::Sender<anyhow::Result<Vec<(String, DateTime<Utc>)>>>,
+    },
     /// Chiude gli intervalli rimasti aperti da un'esecuzione precedente.
     CloseDangling {
         at: DateTime<Utc>,
@@ -206,6 +221,43 @@ impl StorageHandle {
         rx.await?
     }
 
+    /// Salva un messaggio di chat.
+    ///
+    /// `from_user` a None significa "dall'amministratore", `to_user` a None
+    /// significa "a tutta la flotta": e' la convenzione dello schema.
+    /// `delivered` dice se il destinatario lo ha gia' ricevuto in tempo reale.
+    pub async fn save_message(
+        &self,
+        from_user: Option<UserId>,
+        to_user: Option<UserId>,
+        body: &str,
+        at: DateTime<Utc>,
+        delivered: bool,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::SaveMessage {
+            from_user,
+            to_user,
+            body: body.to_string(),
+            at,
+            delivered,
+            reply,
+        })
+        .await?;
+        rx.await?
+    }
+
+    /// Ritira i messaggi arretrati di un utente e li segna come consegnati.
+    ///
+    /// Si chiama al login: sono i messaggi che gli sono stati scritti mentre
+    /// non era collegato. Il ritiro e la marcatura avvengono insieme, cosi'
+    /// non gli arrivano due volte al login successivo.
+    pub async fn take_pending(&self, user: UserId) -> anyhow::Result<Vec<(String, DateTime<Utc>)>> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::TakePending { user, reply }).await?;
+        rx.await?
+    }
+
     /// Chiude gli intervalli lasciati aperti da un'esecuzione precedente e
     /// restituisce quanti ne ha chiusi. Da chiamare all'avvio.
     pub async fn close_dangling(&self, at: DateTime<Utc>) -> anyhow::Result<usize> {
@@ -267,6 +319,21 @@ fn esegui(conn: &Connection, cmd: Command) {
             reply,
         } => {
             let _ = reply.send(applica_transizione(conn, user, to, at));
+        }
+        Command::SaveMessage {
+            from_user,
+            to_user,
+            body,
+            at,
+            delivered,
+            reply,
+        } => {
+            let _ = reply.send(salva_messaggio(
+                conn, from_user, to_user, &body, at, delivered,
+            ));
+        }
+        Command::TakePending { user, reply } => {
+            let _ = reply.send(ritira_arretrati(conn, user));
         }
         Command::CloseDangling { at, reply } => {
             let _ = reply.send(chiudi_intervalli_pendenti(conn, at));
@@ -534,4 +601,69 @@ fn chiudi_intervalli_pendenti(conn: &Connection, at: DateTime<Utc>) -> anyhow::R
         [at.to_rfc3339()],
     )?;
     Ok(n)
+}
+
+/// Inserisce un messaggio nello storico della chat.
+fn salva_messaggio(
+    conn: &Connection,
+    from_user: Option<UserId>,
+    to_user: Option<UserId>,
+    body: &str,
+    at: DateTime<Utc>,
+    delivered: bool,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO messages (from_user_id, to_user_id, body, sent_at, delivered)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        (
+            from_user.map(|u| u.0),
+            to_user.map(|u| u.0),
+            body,
+            at.to_rfc3339(),
+            delivered as i64,
+        ),
+    )?;
+    Ok(())
+}
+
+/// Legge i messaggi arretrati di un utente e li marca come consegnati.
+///
+/// Le due operazioni stanno in una TRANSAZIONE: se la marcatura fallisse dopo
+/// la lettura, al login successivo l'utente riceverebbe di nuovo gli stessi
+/// messaggi. Meglio non consegnarli affatto che consegnarli due volte.
+///
+/// I broadcast sono esclusi: `to_user_id IS NULL` significa "a tutti quelli
+/// collegati in quel momento", e chi era assente non li deve recuperare.
+fn ritira_arretrati(
+    conn: &Connection,
+    user: UserId,
+) -> anyhow::Result<Vec<(String, DateTime<Utc>)>> {
+    let tx = conn.unchecked_transaction()?;
+
+    let arretrati = {
+        let mut statement = tx.prepare(
+            "SELECT body, sent_at FROM messages
+             WHERE to_user_id = ?1 AND delivered = 0
+             ORDER BY sent_at",
+        )?;
+        let righe = statement.query_map([user.0], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+
+        let mut out = Vec::new();
+        for riga in righe {
+            let (body, sent_at) = riga?;
+            let at = DateTime::parse_from_rfc3339(&sent_at)?.with_timezone(&Utc);
+            out.push((body, at));
+        }
+        out
+    };
+
+    tx.execute(
+        "UPDATE messages SET delivered = 1 WHERE to_user_id = ?1 AND delivered = 0",
+        [user.0],
+    )?;
+    tx.commit()?;
+
+    Ok(arretrati)
 }

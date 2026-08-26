@@ -690,3 +690,225 @@ async fn il_login_apre_un_intervallo_di_stato() {
     }
     shutdown.cancel();
 }
+
+// --- chat -----------------------------------------------------------------
+
+/// Si collega come amministratore, senza login (per ora non serve).
+async fn admin(addr: SocketAddr) -> Wire {
+    collega(addr, Role::Admin).await
+}
+
+#[tokio::test]
+async fn un_annuncio_arriva_a_tutta_la_flotta() {
+    let (addr, shutdown) = avvia().await;
+    let mut c1 = autenticato(addr, "camion01").await;
+    let mut c2 = autenticato(addr, "camion02").await;
+    let mut a = admin(addr).await;
+
+    invia(
+        &mut a,
+        &AdminMessage::SendBroadcast {
+            text: "acquistare carburante".into(),
+        },
+    )
+    .await;
+
+    for wire in [&mut c1, &mut c2] {
+        match ricevi::<ServerMessage>(wire).await {
+            ServerMessage::Chat {
+                text, broadcast, ..
+            } => {
+                assert_eq!(text, "acquistare carburante");
+                assert!(broadcast, "un annuncio deve essere marcato broadcast");
+            }
+            altro => panic!("atteso Chat, ricevuto {altro:?}"),
+        }
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn un_messaggio_diretto_arriva_solo_al_destinatario() {
+    let (addr, shutdown) = avvia().await;
+    let mut c1 = autenticato(addr, "camion01").await;
+    let mut c2 = autenticato(addr, "camion02").await;
+    let mut a = admin(addr).await;
+
+    invia(
+        &mut a,
+        &AdminMessage::SendDirect {
+            to: UserId(1),
+            text: "cerca di arrivare in fretta".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut c1).await {
+        ServerMessage::Chat {
+            text, broadcast, ..
+        } => {
+            assert_eq!(text, "cerca di arrivare in fretta");
+            assert!(!broadcast, "un messaggio diretto non e' un broadcast");
+        }
+        altro => panic!("atteso Chat, ricevuto {altro:?}"),
+    }
+
+    // camion02 non deve ricevere nulla.
+    let esito = tokio::time::timeout(std::time::Duration::from_millis(300), c2.next()).await;
+    assert!(esito.is_err(), "camion02 non doveva ricevere il messaggio");
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn il_camionista_risponde_all_amministratore() {
+    let (addr, shutdown) = avvia().await;
+    let mut a = admin(addr).await;
+    let mut c1 = autenticato(addr, "camion01").await;
+
+    invia(
+        &mut c1,
+        &ClientMessage::Chat {
+            text: "ricevuto, sono a 20 minuti".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<AdminReply>(&mut a).await {
+        AdminReply::Chat { username, text, .. } => {
+            assert_eq!(username, "camion01");
+            assert_eq!(text, "ricevuto, sono a 20 minuti");
+        }
+        altro => panic!("atteso Chat, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn i_messaggi_offline_arrivano_al_login_successivo() {
+    let (addr, shutdown) = avvia().await;
+
+    // camion01 esiste ma si scollega.
+    let c = autenticato(addr, "camion01").await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // L'amministratore gli scrive mentre e' assente.
+    let mut a = admin(addr).await;
+    invia(
+        &mut a,
+        &AdminMessage::SendDirect {
+            to: UserId(1),
+            text: "passa in sede".into(),
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Al ritorno lo riceve.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        ricevi::<ServerMessage>(&mut c).await,
+        ServerMessage::LoginOk { .. }
+    ));
+    match ricevi::<ServerMessage>(&mut c).await {
+        ServerMessage::Chat { text, .. } => assert_eq!(text, "passa in sede"),
+        altro => panic!("atteso l'arretrato, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn gli_arretrati_non_vengono_consegnati_due_volte() {
+    let (addr, shutdown) = avvia().await;
+
+    let c = autenticato(addr, "camion01").await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let mut a = admin(addr).await;
+    invia(
+        &mut a,
+        &AdminMessage::SendDirect {
+            to: UserId(1),
+            text: "una volta sola".into(),
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Primo rientro: lo riceve.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Secondo rientro: NON deve ricomparire.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    let esito = tokio::time::timeout(std::time::Duration::from_millis(300), c.next()).await;
+    assert!(esito.is_err(), "l'arretrato e' stato consegnato due volte");
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn un_annuncio_non_finisce_nella_coda_offline() {
+    let (addr, shutdown) = avvia().await;
+
+    let c = autenticato(addr, "camion01").await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Annuncio mandato mentre camion01 e' assente.
+    let mut a = admin(addr).await;
+    invia(
+        &mut a,
+        &AdminMessage::SendBroadcast {
+            text: "annuncio perso".into(),
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Al rientro NON deve riceverlo: un annuncio vale per chi c'era.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    let esito = tokio::time::timeout(std::time::Duration::from_millis(300), c.next()).await;
+    assert!(
+        esito.is_err(),
+        "un broadcast non deve essere recuperato dopo"
+    );
+    shutdown.cancel();
+}

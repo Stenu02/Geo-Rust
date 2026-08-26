@@ -10,7 +10,7 @@
 
 use chrono::{DateTime, Utc};
 use geo_core::{Position, StateMachine, Transition, UserId, UserState};
-use geo_protocol::{FleetEntry, ServerMessage};
+use geo_protocol::{AdminReply, FleetEntry, ServerMessage};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
@@ -42,16 +42,46 @@ struct Connessa {
 #[derive(Clone)]
 pub struct Registry {
     connessi: Arc<Mutex<HashMap<UserId, Connessa>>>,
+    /// Canale verso TUTTI i camionisti collegati: gli annunci dell'amministratore.
     annunci: broadcast::Sender<ServerMessage>,
+    /// Canale verso TUTTI gli amministratori collegati.
+    ///
+    /// Serve la direzione opposta: quando un camionista scrive, il messaggio
+    /// deve arrivare a chi sta guardando la console. Gli amministratori non
+    /// stanno nella mappa `connessi` — quella elenca la flotta, e un
+    /// amministratore non e' un veicolo — quindi hanno un canale a se'.
+    verso_admin: broadcast::Sender<AdminReply>,
 }
 
 impl Registry {
     pub fn new() -> Self {
+        // Il secondo valore restituito da `channel` e' un ricevitore che qui
+        // non serve: ognuno si iscrivera' per conto suo con `subscribe()`.
         let (annunci, _) = broadcast::channel(BROADCAST);
+        let (verso_admin, _) = broadcast::channel(BROADCAST);
         Self {
             connessi: Arc::new(Mutex::new(HashMap::new())),
             annunci,
+            verso_admin,
         }
+    }
+
+    /// Iscrive una sessione amministratore al canale dei messaggi in arrivo.
+    ///
+    /// A differenza dei camionisti, un amministratore non viene inserito in
+    /// nessuna mappa: non fa parte della flotta e non ha uno stato da tracciare.
+    /// Gli serve solo poter ascoltare.
+    pub fn subscribe_admin(&self) -> broadcast::Receiver<AdminReply> {
+        self.verso_admin.subscribe()
+    }
+
+    /// Recapita un messaggio a tutti gli amministratori collegati.
+    ///
+    /// Restituisce quanti lo riceveranno. Zero significa che in questo momento
+    /// nessuno sta guardando la console: il messaggio va comunque salvato sul
+    /// database, ma nessuno lo vedra' comparire in tempo reale.
+    pub fn verso_admin(&self, msg: AdminReply) -> usize {
+        self.verso_admin.send(msg).unwrap_or(0)
     }
 
     /// Segna un utente come collegato e restituisce i due canali da cui la sua

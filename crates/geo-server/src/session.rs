@@ -17,9 +17,9 @@ use geo_protocol::{
 };
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
-
 
 type Wire = Framed<TcpStream, LengthDelimitedCodec>;
 
@@ -34,7 +34,6 @@ pub async fn handle(
     storage: StorageHandle,
     registry: Registry,
 ) -> anyhow::Result<()> {
-
     let peer = stream.peer_addr()?;
     let mut wire = Framed::new(stream, frame_codec());
 
@@ -58,7 +57,6 @@ pub async fn handle(
         Role::Admin => admin_loop(&mut wire, &shutdown, &storage, &registry).await,
     };
 
-
     if let Some((user, username)) = sessione {
         let ora = Utc::now();
         if let Some(t) = registry.on_disconnect(user, ora) {
@@ -73,7 +71,6 @@ pub async fn handle(
     tracing::info!(%peer, "sessione chiusa");
     esito
 }
-
 
 async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
     let frame = match tokio::time::timeout(HANDSHAKE_TIMEOUT, wire.next()).await {
@@ -128,10 +125,6 @@ async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
 }
 
 /// Hash contro cui verificare quando l'utente non esiste.
-///
-/// Senza, rispondere a un username inesistente costerebbe zero millisecondi
-/// contro i ~15 di una verifica vera, e chi cronometra le risposte scoprirebbe
-/// quali utenti esistono. Misurato: 19 ms contro 0.
 const PHC_FITTIZIO: &str = "$argon2id$v=19$m=19456,t=2,p=1$mPPAx9/sJgdFwPpOmZkZzQ$RW7w1/7mKTOGp6CFI7okMaRciTuid7mzwPmOJuhtQRI";
 
 /// Dialogo con un camionista, fino alla disconnessione o alla chiusura del server.
@@ -142,10 +135,64 @@ async fn trucker_loop(
     registry: &Registry,
     autenticato: &mut Option<(UserId, String)>,
 ) -> anyhow::Result<()> {
+    // Le due vie da cui possono arrivare messaggi DAL SERVER verso questo
+    // camionista. Restano vuote finche' non fa login: prima di allora nessuno
+    // sa a chi scrivere.
+    //
+    //   posta   -> messaggi diretti a lui solo
+    //   annunci -> messaggi mandati a tutta la flotta
+    let mut posta: Option<mpsc::Receiver<ServerMessage>> = None;
+    let mut annunci: Option<broadcast::Receiver<ServerMessage>> = None;
+
     loop {
         // Il frame si estrae qui
+        // Quattro cose possono succedere, e si aspettano tutte insieme: qui il
+        // task dorme finche' non ne accade una.
+        //
+        // I due rami delle caselle usano `pending()` quando la casella non
+        // esiste ancora (prima del login): e' un'attesa che non finisce mai,
+        // quindi quel ramo semplicemente non puo' mai vincere.
         let frame = tokio::select! {
             _ = shutdown.cancelled() => break,
+
+            // 1. Un messaggio DIRETTO a questo camionista.
+            msg = async {
+                match posta.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match msg {
+                    Some(m) => send(wire, &m).await?,
+                    // La casella si e' chiusa: succede se il registro ha
+                    // sostituito questa voce con un altro login dello stesso
+                    // utente. Questa sessione non deve piu' ricevere.
+                    None => posta = None,
+                }
+                continue;
+            }
+
+            // 2. Un annuncio a tutta la flotta.
+            msg = async {
+                match annunci.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match msg {
+                    Ok(m) => send(wire, &m).await?,
+                    // Questa sessione era troppo lenta e ha perso qualche
+                    // annuncio: si registra e si continua. Un annuncio vale
+                    // adesso, non ha senso recuperarlo dopo.
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(persi = n, "annunci persi per lentezza");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => annunci = None,
+                }
+                continue;
+            }
+
+            // 3. Un messaggio dal client.
             frame = wire.next() => match frame {
                 // Nessun frame: il client ha chiuso la connessione.
                 None => break,
@@ -209,7 +256,12 @@ async fn trucker_loop(
                 match (utente, corretta) {
                     (Some(user), true) => {
                         tracing::info!(%username, %user, "login effettuato");
-                        let (_posta, _annunci) = registry.register(user, username.clone());
+                        // Da qui in poi questa sessione puo' RICEVERE: il
+                        // registro consegna le due estremita' di lettura, e i
+                        // rami 1 e 2 del select! smettono di essere inerti.
+                        let (rx_posta, rx_annunci) = registry.register(user, username.clone());
+                        posta = Some(rx_posta);
+                        annunci = Some(rx_annunci);
 
                         // SCONNESSO -> FERMO. La transizione va scritta subito:
                         // e' l'apertura del primo intervallo di questa sessione,
@@ -221,6 +273,23 @@ async fn trucker_loop(
 
                         *autenticato = Some((user, username.clone()));
                         send(wire, &ServerMessage::LoginOk { user, username }).await?;
+
+                        // Coda offline: i messaggi diretti arrivati mentre non
+                        // era collegato gli vengono consegnati adesso, in
+                        // ordine di invio. Vengono marcati come consegnati
+                        // dentro la stessa transazione che li legge, quindi al
+                        // prossimo login non ricompaiono.
+                        for (text, at) in storage.take_pending(user).await? {
+                            send(
+                                wire,
+                                &ServerMessage::Chat {
+                                    text,
+                                    broadcast: false,
+                                    at,
+                                },
+                            )
+                            .await?;
+                        }
                     }
                     // Stesso identico messaggio nei due casi: non si rivela se sia
                     // l'utente a non esistere o la password a essere sbagliata.
@@ -265,19 +334,32 @@ async fn trucker_loop(
                     storage.apply_transition(user, t.to, t.at).await?;
                 }
 
-              
                 let state = registry.state_of(user).unwrap_or(UserState::Stopped);
                 send(wire, &ServerMessage::PositionAck { state }).await?;
             }
 
             ClientMessage::Chat { text } => {
-                let Some((user, _)) = autenticato.as_ref() else {
+                let Some((user, username)) = autenticato.as_ref() else {
                     send(wire, &non_autenticato()).await?;
                     continue;
                 };
-                // Il messaggio va all'amministratore: senza registro delle
-                // sessioni, per ora si puo' solo annotarlo.
-                tracing::info!(%user, %text, "messaggio dal camionista");
+                // Il messaggio va a chi sta guardando la console. Viaggia gia'
+                // nella forma che l'amministratore sa leggere, con dentro il
+                // nome di chi scrive: la console non deve andarselo a cercare.
+                let ora = Utc::now();
+                let letto_da = registry.verso_admin(AdminReply::Chat {
+                    from: *user,
+                    username: username.clone(),
+                    text: text.clone(),
+                    at: ora,
+                });
+                // Salvato comunque, anche se nessun amministratore era
+                // collegato: lo storico della chat non dipende da chi stava
+                // guardando in quel momento.
+                storage
+                    .save_message(Some(*user), None, &text, ora, letto_da > 0)
+                    .await?;
+                tracing::info!(%user, %text, letto_da, "messaggio dal camionista");
             }
 
             ClientMessage::Heartbeat => send(wire, &ServerMessage::Pong).await?,
@@ -295,9 +377,26 @@ async fn admin_loop(
     storage: &StorageHandle,
     registry: &Registry,
 ) -> anyhow::Result<()> {
+    // L'amministratore ascolta cio' che i camionisti scrivono. Si iscrive
+    // subito, senza aspettare un login: la console serve a guardare.
+    let mut dai_camionisti = registry.subscribe_admin();
+
     loop {
         let frame = tokio::select! {
             _ = shutdown.cancelled() => break,
+
+            // Un messaggio scritto da un camionista, da mostrare in console.
+            msg = dai_camionisti.recv() => {
+                match msg {
+                    Ok(m) => send(wire, &m).await?,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(persi = n, "messaggi persi per lentezza");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+                continue;
+            }
+
             frame = wire.next() => match frame {
                 None => break,
                 Some(frame) => frame?,
@@ -339,10 +438,40 @@ async fn admin_loop(
                 send(wire, &AdminReply::QueryResult(Box::new(report))).await?;
             }
             AdminMessage::SendDirect { to, text } => {
-                tracing::info!(%to, %text, "messaggio diretto (non ancora instradato)")
+                let ora = Utc::now();
+                // `send_to` restituisce false se il camionista non e' collegato
+                // oppure se la sua casella e' piena. Non e' un errore del
+                // server: e' l'informazione che serve per decidere se mettere
+                // il messaggio in coda per il prossimo login.
+                let consegnato = registry.send_to(
+                    to,
+                    ServerMessage::Chat {
+                        text: text.clone(),
+                        broadcast: false,
+                        at: ora,
+                    },
+                );
+                // Se non e' stato consegnato resta in coda con delivered = 0,
+                // e il destinatario lo ricevera' al prossimo login.
+                storage
+                    .save_message(None, Some(to), &text, ora, consegnato)
+                    .await?;
+                tracing::info!(%to, %text, consegnato, "messaggio diretto");
             }
             AdminMessage::SendBroadcast { text } => {
-                tracing::info!(%text, "broadcast (non ancora instradato)")
+                let ora = Utc::now();
+                // Un annuncio va ai camionisti COLLEGATI in questo momento:
+                // e' cio' che dice la specifica. Zero destinatari non e' un
+                // errore, significa flotta vuota.
+                let destinatari = registry.annuncia(ServerMessage::Chat {
+                    text: text.clone(),
+                    broadcast: true,
+                    at: ora,
+                });
+                // Un annuncio si salva sempre come gia' consegnato: vale per
+                // chi c'era, e chi era assente non lo deve recuperare dopo.
+                storage.save_message(None, None, &text, ora, true).await?;
+                tracing::info!(%text, destinatari, "annuncio a tutta la flotta");
             }
             AdminMessage::Heartbeat => send(wire, &AdminReply::Pong).await?,
             AdminMessage::Logout => break,
