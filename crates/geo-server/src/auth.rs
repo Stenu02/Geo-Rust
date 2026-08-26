@@ -1,10 +1,8 @@
-//! Registrazione e autenticazione (R1, R2).
+//! Hashing e verifica delle password.
 //!
-//! Le password non vanno mai memorizzate in chiaro: Argon2 con salt per utente.
-//! Non e' richiesto esplicitamente dalla specifica, ma e' una di quelle cose che
-//! all'orale distinguono chi ha capito da chi ha fatto i compiti.
-//!
-//! ATTACCO: P2, fase F2.
+//! Le password non vengono mai memorizzate in chiaro: si salva un hash Argon2
+//! con salt diverso per ogni utente, cosi' due persone con la stessa password
+//! hanno comunque record distinti nel database.
 
 use argon2::password_hash::{
     rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,

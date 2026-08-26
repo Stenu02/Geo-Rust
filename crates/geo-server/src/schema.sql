@@ -1,15 +1,15 @@
--- Schema del database GeoRuggine (R15).
+-- Schema del database.
 --
--- Incorporato nel binario con include_str!: nessun file da distribuire accanto
--- all'eseguibile, che sarebbe il modo piu' banale di rompere R16.
+-- Incorporato nel binario con include_str!: non c'e' nessun file da distribuire
+-- accanto all'eseguibile, che si romperebbe al primo spostamento del binario.
 --
--- Va scritto COMPLETO nella fase comune: cambiare lo schema dopo significa
--- toccare storage.rs, le query delle analisi e lo script di seeding insieme.
+-- Cambiarlo dopo significa toccare insieme storage.rs, le query delle analisi
+-- e lo script di popolamento: conviene che nasca completo.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
--- R1, R2, R12 --------------------------------------------------------------
+-- Utenti --------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    NOT NULL UNIQUE,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT    NOT NULL
 );
 
--- R4, R8 -------------------------------------------------------------------
+-- Posizioni ricevute dai camionisti -----------------------------------------
 CREATE TABLE IF NOT EXISTS positions (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -30,11 +30,12 @@ CREATE TABLE IF NOT EXISTS positions (
     lon      REAL    NOT NULL
 );
 
--- Indice essenziale: ogni interrogazione di R11 filtra per utente e periodo.
+-- Indice essenziale: ogni interrogazione filtra per utente e periodo.
 CREATE INDEX IF NOT EXISTS idx_positions_user_at ON positions(user_id, at);
 
--- R5, R10 ------------------------------------------------------------------
--- Intervalli, non eventi: rende dirette le somme di R10 e banale il troncamento di R11.
+-- Intervalli di stato -------------------------------------------------------
+-- Intervalli e non singoli eventi: rende dirette le somme delle durate e banale
+-- il troncamento di un intervallo sui confini del periodo analizzato.
 -- end_at NULL = intervallo ancora aperto (lo stato corrente dell'utente).
 CREATE TABLE IF NOT EXISTS state_intervals (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_intervals_user_start ON state_intervals(user_id, 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_intervals_one_open
     ON state_intervals(user_id) WHERE end_at IS NULL;
 
--- R13, R14 -----------------------------------------------------------------
+-- Messaggi di chat ----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS messages (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     -- NULL = dall'amministratore verso i camionisti

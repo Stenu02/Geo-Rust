@@ -1,4 +1,4 @@
-//! Persistenza (R15). Attore proprietario dell'unica connessione SQLite.
+//! Persistenza: l'attore proprietario dell'unica connessione SQLite.
 //!
 //! PERCHE' UN ATTORE: rusqlite e' SINCRONO. Chiamarlo da un task tokio blocca il
 //! thread del runtime e con esso tutti gli altri task assegnati a quel thread.
@@ -10,7 +10,6 @@
 //!   [evaluator]  --+                   |
 //!                                      +--> oneshot --> risposta
 //!
-//! ATTACCO: P2, fase F2. E' molto probabile che ve lo chiedano all'orale.
 
 use chrono::{DateTime, Utc};
 use geo_core::position::FixedPosition;
