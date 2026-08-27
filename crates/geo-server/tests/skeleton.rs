@@ -36,6 +36,16 @@ async fn avvia() -> (SocketAddr, CancellationToken) {
     let server = Server::bind(config()).await.expect("bind");
     let addr = server.local_addr().expect("local_addr");
     let shutdown = server.shutdown_handle();
+
+    // L'equivalente di `geo-server --create-admin capoflotta`: l'account
+    // amministratore non nasce dal protocollo, va messo nel database prima.
+    let phc = geo_server::auth::hash_password("segreto-admin").expect("hash");
+    server
+        .storage()
+        .create_user("capoflotta", &phc, "admin")
+        .await
+        .expect("creazione amministratore");
+
     tokio::spawn(server.run());
     (addr, shutdown)
 }
@@ -67,7 +77,11 @@ async fn collega(addr: SocketAddr, role: Role) -> Wire {
 }
 
 /// Registra un camionista e fa login: molte prove partono da qui.
-async fn autenticato(addr: SocketAddr, nome: &str) -> Wire {
+///
+/// Restituisce anche l'id assegnato dal server: cablarlo nei test lo renderebbe
+/// dipendente dall'ordine in cui gli utenti vengono creati, e basterebbe
+/// aggiungere un account prima per far fallire tutto.
+async fn autenticato(addr: SocketAddr, nome: &str) -> (Wire, UserId) {
     let mut wire = collega(addr, Role::Trucker).await;
     invia(
         &mut wire,
@@ -87,7 +101,7 @@ async fn autenticato(addr: SocketAddr, nome: &str) -> Wire {
     )
     .await;
     match ricevi::<ServerMessage>(&mut wire).await {
-        ServerMessage::LoginOk { .. } => wire,
+        ServerMessage::LoginOk { user, .. } => (wire, user),
         altro => panic!("login fallito: {altro:?}"),
     }
 }
@@ -213,7 +227,7 @@ async fn registrazione_e_login_rispondono() {
 #[tokio::test]
 async fn posizione_riceve_ack_con_stato() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = autenticato(addr, "camion01").await;
+    let mut wire = autenticato(addr, "camion01").await.0;
 
     invia(
         &mut wire,
@@ -257,7 +271,7 @@ async fn posizione_prima_del_login_rifiutata() {
 #[tokio::test]
 async fn registrazione_duplicata_rifiutata() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = autenticato(addr, "camion01").await;
+    let mut wire = autenticato(addr, "camion01").await.0;
 
     // Stesso nome, seconda volta.
     invia(
@@ -336,7 +350,7 @@ async fn utente_inesistente_stesso_errore_di_password_errata() {
 #[tokio::test]
 async fn secondo_login_sulla_stessa_sessione_rifiutato() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = autenticato(addr, "camion01").await;
+    let mut wire = autenticato(addr, "camion01").await.0;
 
     invia(
         &mut wire,
@@ -387,10 +401,10 @@ async fn la_flotta_elenca_i_camionisti_collegati() {
     let (addr, shutdown) = avvia().await;
 
     // Due camionisti si collegano e fanno login.
-    let _c1 = autenticato(addr, "camion01").await;
-    let _c2 = autenticato(addr, "camion02").await;
+    let _c1 = autenticato(addr, "camion01").await.0;
+    let _c2 = autenticato(addr, "camion02").await.0;
 
-    let mut admin = collega(addr, Role::Admin).await;
+    let mut admin = admin(addr).await;
     invia(&mut admin, &AdminMessage::ListFleet).await;
 
     match ricevi::<AdminReply>(&mut admin).await {
@@ -410,7 +424,7 @@ async fn la_flotta_elenca_i_camionisti_collegati() {
 #[tokio::test]
 async fn la_flotta_e_vuota_senza_camionisti() {
     let (addr, shutdown) = avvia().await;
-    let mut admin = collega(addr, Role::Admin).await;
+    let mut admin = admin(addr).await;
     invia(&mut admin, &AdminMessage::ListFleet).await;
 
     match ricevi::<AdminReply>(&mut admin).await {
@@ -424,8 +438,8 @@ async fn la_flotta_e_vuota_senza_camionisti() {
 async fn chi_si_scollega_sparisce_dalla_flotta() {
     let (addr, shutdown) = avvia().await;
 
-    let c1 = autenticato(addr, "camion01").await;
-    let mut admin = collega(addr, Role::Admin).await;
+    let c1 = autenticato(addr, "camion01").await.0;
+    let mut admin = admin(addr).await;
 
     invia(&mut admin, &AdminMessage::ListFleet).await;
     match ricevi::<AdminReply>(&mut admin).await {
@@ -451,7 +465,7 @@ async fn chi_si_scollega_sparisce_dalla_flotta() {
 #[tokio::test]
 async fn la_posizione_inviata_compare_nella_flotta() {
     let (addr, shutdown) = avvia().await;
-    let mut c1 = autenticato(addr, "camion01").await;
+    let mut c1 = autenticato(addr, "camion01").await.0;
 
     let ora = chrono::Utc::now();
     invia(
@@ -464,7 +478,7 @@ async fn la_posizione_inviata_compare_nella_flotta() {
     .await;
     let _: ServerMessage = ricevi(&mut c1).await;
 
-    let mut admin = collega(addr, Role::Admin).await;
+    let mut admin = admin(addr).await;
     invia(&mut admin, &AdminMessage::ListFleet).await;
 
     match ricevi::<AdminReply>(&mut admin).await {
@@ -481,12 +495,13 @@ async fn la_posizione_inviata_compare_nella_flotta() {
 #[tokio::test]
 async fn interrogazione_restituisce_un_report() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = collega(addr, Role::Admin).await;
+    let (_camion, camion_id) = autenticato(addr, "camion01").await;
+    let mut wire = admin(addr).await;
 
     invia(
         &mut wire,
         &AdminMessage::Query {
-            user: UserId(1),
+            user: camion_id,
             spec: RangeSpec::Today,
         },
     )
@@ -496,7 +511,7 @@ async fn interrogazione_restituisce_un_report() {
         AdminReply::QueryResult(report) => {
             // Il report torna sull'utente e sul periodo richiesti: e' l'unica
             // cosa che si puo' verificare finche' i numeri sono inventati.
-            assert_eq!(report.user, UserId(1));
+            assert_eq!(report.user, camion_id);
             assert_eq!(report.spec, RangeSpec::Today);
         }
         altro => panic!("atteso QueryResult, ricevuto {altro:?}"),
@@ -548,7 +563,7 @@ async fn piu_camionisti_in_parallelo() {
 #[tokio::test]
 async fn il_cambio_di_coordinata_porta_a_movimento() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = autenticato(addr, "camion01").await;
+    let mut wire = autenticato(addr, "camion01").await.0;
     let t0 = chrono::Utc::now();
 
     // La prima posizione non e' un "cambio": si resta fermi.
@@ -585,7 +600,7 @@ async fn il_cambio_di_coordinata_porta_a_movimento() {
 #[tokio::test]
 async fn coordinate_invalide_rifiutate() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = autenticato(addr, "camion01").await;
+    let mut wire = autenticato(addr, "camion01").await.0;
 
     // NOTA: il caso (NaN, 7.0) manca di proposito. `Position::is_valid` lo
     // accetta — con NaN ogni confronto e' falso, quindi il controllo di
@@ -611,7 +626,7 @@ async fn coordinate_invalide_rifiutate() {
 #[tokio::test]
 async fn le_posizioni_finiscono_nel_report_dell_amministratore() {
     let (addr, shutdown) = avvia().await;
-    let mut camion = autenticato(addr, "camion01").await;
+    let (mut camion, camion_id) = autenticato(addr, "camion01").await;
 
     // Tre posizioni lungo la rotta Torino -> Asti.
     let t0 = chrono::Utc::now();
@@ -635,11 +650,11 @@ async fn le_posizioni_finiscono_nel_report_dell_amministratore() {
     }
 
     // L'amministratore interroga: il tragitto non deve essere vuoto.
-    let mut admin = collega(addr, Role::Admin).await;
+    let mut admin = admin(addr).await;
     invia(
         &mut admin,
         &AdminMessage::Query {
-            user: UserId(1),
+            user: camion_id,
             spec: RangeSpec::Today,
         },
     )
@@ -665,13 +680,13 @@ async fn le_posizioni_finiscono_nel_report_dell_amministratore() {
 #[tokio::test]
 async fn il_login_apre_un_intervallo_di_stato() {
     let (addr, shutdown) = avvia().await;
-    let _camion = autenticato(addr, "camion01").await;
+    let (_camion, camion_id) = autenticato(addr, "camion01").await;
 
-    let mut admin = collega(addr, Role::Admin).await;
+    let mut admin = admin(addr).await;
     invia(
         &mut admin,
         &AdminMessage::Query {
-            user: UserId(1),
+            user: camion_id,
             spec: RangeSpec::Today,
         },
     )
@@ -693,16 +708,32 @@ async fn il_login_apre_un_intervallo_di_stato() {
 
 // --- chat -----------------------------------------------------------------
 
-/// Si collega come amministratore, senza login (per ora non serve).
+/// Si collega come amministratore e fa login.
+///
+/// L'account non puo' nascere dal protocollo — gli amministratori si creano
+/// dalla riga di comando — quindi il test lo inserisce direttamente nel
+/// database, che e' esattamente cio' che fa `--create-admin`.
 async fn admin(addr: SocketAddr) -> Wire {
-    collega(addr, Role::Admin).await
+    let mut wire = collega(addr, Role::Admin).await;
+    invia(
+        &mut wire,
+        &AdminMessage::Login {
+            username: "capoflotta".into(),
+            password: "segreto-admin".into(),
+        },
+    )
+    .await;
+    match ricevi::<AdminReply>(&mut wire).await {
+        AdminReply::LoginOk { .. } => wire,
+        altro => panic!("login amministratore fallito: {altro:?}"),
+    }
 }
 
 #[tokio::test]
 async fn un_annuncio_arriva_a_tutta_la_flotta() {
     let (addr, shutdown) = avvia().await;
-    let mut c1 = autenticato(addr, "camion01").await;
-    let mut c2 = autenticato(addr, "camion02").await;
+    let mut c1 = autenticato(addr, "camion01").await.0;
+    let mut c2 = autenticato(addr, "camion02").await.0;
     let mut a = admin(addr).await;
 
     invia(
@@ -730,14 +761,14 @@ async fn un_annuncio_arriva_a_tutta_la_flotta() {
 #[tokio::test]
 async fn un_messaggio_diretto_arriva_solo_al_destinatario() {
     let (addr, shutdown) = avvia().await;
-    let mut c1 = autenticato(addr, "camion01").await;
-    let mut c2 = autenticato(addr, "camion02").await;
+    let (mut c1, camion_id) = autenticato(addr, "camion01").await;
+    let mut c2 = autenticato(addr, "camion02").await.0;
     let mut a = admin(addr).await;
 
     invia(
         &mut a,
         &AdminMessage::SendDirect {
-            to: UserId(1),
+            to: camion_id,
             text: "cerca di arrivare in fretta".into(),
         },
     )
@@ -763,7 +794,7 @@ async fn un_messaggio_diretto_arriva_solo_al_destinatario() {
 async fn il_camionista_risponde_all_amministratore() {
     let (addr, shutdown) = avvia().await;
     let mut a = admin(addr).await;
-    let mut c1 = autenticato(addr, "camion01").await;
+    let mut c1 = autenticato(addr, "camion01").await.0;
 
     invia(
         &mut c1,
@@ -788,7 +819,7 @@ async fn i_messaggi_offline_arrivano_al_login_successivo() {
     let (addr, shutdown) = avvia().await;
 
     // camion01 esiste ma si scollega.
-    let c = autenticato(addr, "camion01").await;
+    let (c, camion_id) = autenticato(addr, "camion01").await;
     drop(c);
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
@@ -797,7 +828,7 @@ async fn i_messaggi_offline_arrivano_al_login_successivo() {
     invia(
         &mut a,
         &AdminMessage::SendDirect {
-            to: UserId(1),
+            to: camion_id,
             text: "passa in sede".into(),
         },
     )
@@ -829,7 +860,7 @@ async fn i_messaggi_offline_arrivano_al_login_successivo() {
 async fn gli_arretrati_non_vengono_consegnati_due_volte() {
     let (addr, shutdown) = avvia().await;
 
-    let c = autenticato(addr, "camion01").await;
+    let (c, camion_id) = autenticato(addr, "camion01").await;
     drop(c);
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
@@ -837,7 +868,7 @@ async fn gli_arretrati_non_vengono_consegnati_due_volte() {
     invia(
         &mut a,
         &AdminMessage::SendDirect {
-            to: UserId(1),
+            to: camion_id,
             text: "una volta sola".into(),
         },
     )
@@ -879,7 +910,7 @@ async fn gli_arretrati_non_vengono_consegnati_due_volte() {
 async fn un_annuncio_non_finisce_nella_coda_offline() {
     let (addr, shutdown) = avvia().await;
 
-    let c = autenticato(addr, "camion01").await;
+    let (c, _camion_id) = autenticato(addr, "camion01").await;
     drop(c);
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 

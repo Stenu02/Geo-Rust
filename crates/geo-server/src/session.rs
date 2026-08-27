@@ -7,7 +7,6 @@
 use crate::auth;
 use crate::registry::Registry;
 use crate::storage::{StorageHandle, UsernameTaken};
-use crate::stub;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use geo_core::{TimeRange, UserId, UserState};
@@ -247,8 +246,10 @@ async fn trucker_loop(
                     continue;
                 }
 
+                // Al camionista il ruolo non interessa: gli basta esistere e
+                // sapere la propria password.
                 let (utente, phc) = match storage.find_user(&username).await? {
-                    Some((u, p)) => (Some(u), p),
+                    Some((u, p, _ruolo)) => (Some(u), p),
                     None => (None, PHC_FITTIZIO.to_string()),
                 };
                 let corretta = auth::verify_password_async(password, phc).await;
@@ -377,9 +378,13 @@ async fn admin_loop(
     storage: &StorageHandle,
     registry: &Registry,
 ) -> anyhow::Result<()> {
-    // L'amministratore ascolta cio' che i camionisti scrivono. Si iscrive
-    // subito, senza aspettare un login: la console serve a guardare.
+    // L'amministratore ascolta cio' che i camionisti scrivono.
     let mut dai_camionisti = registry.subscribe_admin();
+
+    // Chi si e' autenticato su questa connessione. Come per il camionista,
+    // resta None finche' non arriva un login valido: dichiararsi
+    // amministratore nell'handshake non basta, va dimostrato.
+    let mut autenticato: Option<UserId> = None;
 
     loop {
         let frame = tokio::select! {
@@ -404,18 +409,60 @@ async fn admin_loop(
         };
 
         match decode::<AdminMessage>(&frame[..])? {
-            AdminMessage::Login { username, .. } => {
-                tracing::info!(%username, "login amministratore (finto)");
-                send(
-                    wire,
-                    &AdminReply::LoginOk {
-                        user: stub::AMMINISTRATORE,
-                        username,
-                    },
-                )
-                .await?;
+            AdminMessage::Login { username, password } => {
+                if autenticato.is_some() {
+                    send(
+                        wire,
+                        &AdminReply::Error {
+                            code: ErrorCode::NotAuthorized,
+                            detail: "sessione gia' autenticata".into(),
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+
+                // Stessa difesa del login camionista: si verifica sempre una
+                // password, anche quando l'utente non esiste, cosi' il tempo di
+                // risposta non rivela chi e' registrato e chi no.
+                let (utente, phc, ruolo) = match storage.find_user(&username).await? {
+                    Some((u, p, r)) => (Some(u), p, r),
+                    None => (None, PHC_FITTIZIO.to_string(), String::new()),
+                };
+                let corretta = auth::verify_password_async(password, phc).await;
+
+                // Tre condizioni, non due: l'utente deve esistere, la password
+                // deve essere giusta, e il ruolo deve essere quello di
+                // amministratore. Senza l'ultima, un camionista che dichiara
+                // Role::Admin nell'handshake entrerebbe con le proprie
+                // credenziali e vedrebbe l'intera flotta.
+                match (utente, corretta, ruolo.as_str()) {
+                    (Some(user), true, "admin") => {
+                        tracing::info!(%username, %user, "login amministratore");
+                        autenticato = Some(user);
+                        send(wire, &AdminReply::LoginOk { user, username }).await?;
+                    }
+                    // Un solo messaggio per tutti e tre i motivi di rifiuto:
+                    // non si rivela se l'utente non esista, se la password sia
+                    // sbagliata o se manchi il permesso.
+                    _ => {
+                        tracing::warn!(%username, %ruolo, "login amministratore rifiutato");
+                        send(
+                            wire,
+                            &AdminReply::Error {
+                                code: ErrorCode::InvalidCredentials,
+                                detail: "credenziali non valide".into(),
+                            },
+                        )
+                        .await?;
+                    }
+                }
             }
             AdminMessage::ListFleet => {
+                if autenticato.is_none() {
+                    send(wire, &admin_non_autenticato()).await?;
+                    continue;
+                }
                 send(
                     wire,
                     &AdminReply::Fleet {
@@ -427,6 +474,10 @@ async fn admin_loop(
             // risolve il periodo, estrae dal database intervalli e
             // posizioni, chiama la creazione del repor e lo rispedisce.
             AdminMessage::Query { user, spec } => {
+                if autenticato.is_none() {
+                    send(wire, &admin_non_autenticato()).await?;
+                    continue;
+                }
                 let now = Utc::now();
                 let range = TimeRange::resolve(spec, now);
                 let intervals = storage.intervals_for(user, range).await?;
@@ -438,6 +489,10 @@ async fn admin_loop(
                 send(wire, &AdminReply::QueryResult(Box::new(report))).await?;
             }
             AdminMessage::SendDirect { to, text } => {
+                if autenticato.is_none() {
+                    send(wire, &admin_non_autenticato()).await?;
+                    continue;
+                }
                 let ora = Utc::now();
                 // `send_to` restituisce false se il camionista non e' collegato
                 // oppure se la sua casella e' piena. Non e' un errore del
@@ -459,6 +514,10 @@ async fn admin_loop(
                 tracing::info!(%to, %text, consegnato, "messaggio diretto");
             }
             AdminMessage::SendBroadcast { text } => {
+                if autenticato.is_none() {
+                    send(wire, &admin_non_autenticato()).await?;
+                    continue;
+                }
                 let ora = Utc::now();
                 // Un annuncio va ai camionisti COLLEGATI in questo momento:
                 // e' cio' che dice la specifica. Zero destinatari non e' un
@@ -505,5 +564,13 @@ fn non_autenticato() -> ServerMessage {
     ServerMessage::Error {
         code: ErrorCode::NotAuthenticated,
         detail: "serve il login prima di inviare posizioni o messaggi".into(),
+    }
+}
+
+/// L'errore per un amministratore che agisce prima di aver fatto login.
+fn admin_non_autenticato() -> AdminReply {
+    AdminReply::Error {
+        code: ErrorCode::NotAuthenticated,
+        detail: "serve il login".into(),
     }
 }

@@ -5,7 +5,6 @@
 //!   registry   mappa di chi è collegato in questo momento
 //!   shutdown   segnale di chiusura,
 
-
 pub mod admin;
 pub mod auth;
 pub mod cpu_log;
@@ -13,7 +12,6 @@ pub mod evaluator;
 pub mod registry;
 pub mod session;
 pub mod storage;
-pub mod stub;
 
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -50,7 +48,6 @@ pub struct Server {
 impl Server {
     /// Apre il socket di ascolto.
     pub async fn bind(config: ServerConfig) -> anyhow::Result<Self> {
-
         let listener = TcpListener::bind(config.bind).await?;
         // Avvia l'attore storage prima di accettare connessioni.
         let storage = StorageHandle::spawn(&config.db_path)?;
@@ -79,6 +76,11 @@ impl Server {
 
     pub fn shutdown_handle(&self) -> CancellationToken {
         self.shutdown.clone()
+    }
+
+    /// L'attore del database, per chi deve preparare dati prima dell'avvio.
+    pub fn storage(&self) -> &StorageHandle {
+        &self.storage
     }
 
     pub fn config(&self) -> &ServerConfig {

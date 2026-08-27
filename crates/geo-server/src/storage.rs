@@ -18,6 +18,14 @@ use rusqlite::Connection;
 use std::path::Path;
 use tokio::sync::{mpsc, oneshot};
 
+/// Cio' che si sa di un utente al momento del login: chi e', come verificare la
+/// sua password, e cosa gli e' permesso fare.
+///
+/// Il ruolo serve al login dell'amministratore: verificare la password risponde
+/// alla domanda "sei chi dici di essere", il ruolo a "e hai il diritto di
+/// entrare da questa porta". Sono due domande diverse.
+pub type Utente = (UserId, String, String);
+
 /// Errore distinguibile dagli altri: permette a chi chiama di rispondere
 /// "username gia' in uso" invece di un errore generico, senza dover confrontare
 /// stringhe di messaggio.
@@ -41,8 +49,8 @@ enum Command {
     },
     FindUser {
         username: String,
-        /// Some(id, hash) se esiste, None se non c'e'.
-        reply: oneshot::Sender<anyhow::Result<Option<(UserId, String)>>>,
+        /// `Some(id, hash, ruolo)` se esiste, `None` se non c'e'.
+        reply: oneshot::Sender<anyhow::Result<Option<Utente>>>,
     },
     PositionsFor {
         user: UserId,
@@ -149,7 +157,7 @@ impl StorageHandle {
     }
 
     /// Cerca un utente per nome. `None` se non esiste.
-    pub async fn find_user(&self, username: &str) -> anyhow::Result<Option<(UserId, String)>> {
+    pub async fn find_user(&self, username: &str) -> anyhow::Result<Option<Utente>> {
         let (reply, rx) = oneshot::channel();
         self.invia(Command::FindUser {
             username: username.to_string(),
@@ -376,12 +384,18 @@ fn crea_utente(
     }
 }
 
-/// Cerca un utente e ne restituisce id e hash della password.
-fn trova_utente(conn: &Connection, username: &str) -> anyhow::Result<Option<(UserId, String)>> {
+/// Cerca un utente e ne restituisce id, hash della password e ruolo.
+fn trova_utente(conn: &Connection, username: &str) -> anyhow::Result<Option<Utente>> {
     let esito = conn.query_row(
-        "SELECT id, password_hash FROM users WHERE username = ?1",
+        "SELECT id, password_hash, role FROM users WHERE username = ?1",
         [username],
-        |riga| Ok((UserId(riga.get(0)?), riga.get::<_, String>(1)?)),
+        |riga| {
+            Ok((
+                UserId(riga.get(0)?),
+                riga.get::<_, String>(1)?,
+                riga.get::<_, String>(2)?,
+            ))
+        },
     );
 
     match esito {
