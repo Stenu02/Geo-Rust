@@ -7,8 +7,7 @@
 //! Nota multipiattaforma: terminare un figlio funziona diversamente su Unix
 //! (SIGTERM) e su Windows. Gestite entrambi.
 //!
-//! ATTACCO: P2, fase F7.
 
 fn main() -> anyhow::Result<()> {
-    todo!("F7 — P2")
+    todo!("da implementare")
 }

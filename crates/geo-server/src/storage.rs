@@ -1,4 +1,4 @@
-//! Persistenza (R15). Attore proprietario dell'unica connessione SQLite.
+//! Persistenza: l'attore proprietario dell'unica connessione SQLite.
 //!
 //! PERCHE' UN ATTORE: rusqlite e' SINCRONO. Chiamarlo da un task tokio blocca il
 //! thread del runtime e con esso tutti gli altri task assegnati a quel thread.
@@ -10,14 +10,20 @@
 //!   [evaluator]  --+                   |
 //!                                      +--> oneshot --> risposta
 //!
-//! ATTACCO: P2, fase F2. E' molto probabile che ve lo chiedano all'orale.
 
+use chrono::{DateTime, Utc};
+use geo_core::position::FixedPosition;
 use geo_core::{Position, StateInterval, TimeRange, Timestamped, UserId, UserState};
 use rusqlite::Connection;
 use std::path::Path;
-use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, oneshot};
-use geo_core::position::FixedPosition;
+
+/// Errore distinguibile dagli altri: permette a chi chiama di rispondere
+/// "username gia' in uso" invece di un errore generico, senza dover confrontare
+/// stringhe di messaggio.
+#[derive(Debug, thiserror::Error)]
+#[error("username gia' in uso")]
+pub struct UsernameTaken;
 
 /// Quanti comandi possono restare in coda prima che chi invia debba aspettare.
 /// Un limite serve: senza, una raffica di scritture farebbe crescere la coda
@@ -47,7 +53,41 @@ enum Command {
         user: UserId,
         range: TimeRange,
         reply: oneshot::Sender<anyhow::Result<Vec<StateInterval>>>,
-    }
+    },
+    /// Salva una posizione ricevuta da un camionista.
+    SavePosition {
+        user: UserId,
+        at: DateTime<Utc>,
+        position: Position,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Chiude l'intervallo di stato aperto e ne apre uno nuovo.
+    ApplyTransition {
+        user: UserId,
+        to: UserState,
+        at: DateTime<Utc>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Salva un messaggio di chat nello storico.
+    SaveMessage {
+        from_user: Option<UserId>,
+        to_user: Option<UserId>,
+        body: String,
+        at: DateTime<Utc>,
+        delivered: bool,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Prende i messaggi diretti a un utente che non gli sono mai arrivati,
+    /// e li segna come consegnati.
+    TakePending {
+        user: UserId,
+        reply: oneshot::Sender<anyhow::Result<Vec<(String, DateTime<Utc>)>>>,
+    },
+    /// Chiude gli intervalli rimasti aperti da un'esecuzione precedente.
+    CloseDangling {
+        at: DateTime<Utc>,
+        reply: oneshot::Sender<anyhow::Result<usize>>,
+    },
 }
 
 /// Da qui si parla con il database. E' clonabile: ogni sessione ne tiene
@@ -120,16 +160,108 @@ impl StorageHandle {
     }
 
     /// Restituisce un vettore di FixedPositions, necessario per l'analisi e la creazione del report di movimento
-    pub async fn positions_for(&self, user: UserId, range: TimeRange) -> anyhow::Result<Vec<FixedPosition>> {
+    pub async fn positions_for(
+        &self,
+        user: UserId,
+        range: TimeRange,
+    ) -> anyhow::Result<Vec<FixedPosition>> {
         let (reply, rx) = oneshot::channel();
-        self.invia(Command::PositionsFor { user, range, reply }).await?;
+        self.invia(Command::PositionsFor { user, range, reply })
+            .await?;
         rx.await?
     }
 
     /// Restituisce un vettore di StateInterval, necessario per l'analisi e la creazione del report di movimento
-    pub async fn intervals_for(&self, user: UserId, range: TimeRange) -> anyhow::Result<Vec<StateInterval>> {
+    pub async fn intervals_for(
+        &self,
+        user: UserId,
+        range: TimeRange,
+    ) -> anyhow::Result<Vec<StateInterval>> {
         let (reply, rx) = oneshot::channel();
-        self.invia(Command::IntervalsFor { user, range, reply }).await?;
+        self.invia(Command::IntervalsFor { user, range, reply })
+            .await?;
+        rx.await?
+    }
+
+    /// Salva una posizione nello storico.
+    pub async fn save_position(
+        &self,
+        user: UserId,
+        at: DateTime<Utc>,
+        position: Position,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::SavePosition {
+            user,
+            at,
+            position,
+            reply,
+        })
+        .await?;
+        rx.await?
+    }
+
+    /// Registra un cambio di stato: chiude l'intervallo aperto a `at` e ne apre
+    /// uno nuovo nello stato `to`, sempre a `at`.
+    pub async fn apply_transition(
+        &self,
+        user: UserId,
+        to: UserState,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::ApplyTransition {
+            user,
+            to,
+            at,
+            reply,
+        })
+        .await?;
+        rx.await?
+    }
+
+    /// Salva un messaggio di chat.
+    ///
+    /// `from_user` a None significa "dall'amministratore", `to_user` a None
+    /// significa "a tutta la flotta": e' la convenzione dello schema.
+    /// `delivered` dice se il destinatario lo ha gia' ricevuto in tempo reale.
+    pub async fn save_message(
+        &self,
+        from_user: Option<UserId>,
+        to_user: Option<UserId>,
+        body: &str,
+        at: DateTime<Utc>,
+        delivered: bool,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::SaveMessage {
+            from_user,
+            to_user,
+            body: body.to_string(),
+            at,
+            delivered,
+            reply,
+        })
+        .await?;
+        rx.await?
+    }
+
+    /// Ritira i messaggi arretrati di un utente e li segna come consegnati.
+    ///
+    /// Si chiama al login: sono i messaggi che gli sono stati scritti mentre
+    /// non era collegato. Il ritiro e la marcatura avvengono insieme, cosi'
+    /// non gli arrivano due volte al login successivo.
+    pub async fn take_pending(&self, user: UserId) -> anyhow::Result<Vec<(String, DateTime<Utc>)>> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::TakePending { user, reply }).await?;
+        rx.await?
+    }
+
+    /// Chiude gli intervalli lasciati aperti da un'esecuzione precedente e
+    /// restituisce quanti ne ha chiusi. Da chiamare all'avvio.
+    pub async fn close_dangling(&self, at: DateTime<Utc>) -> anyhow::Result<usize> {
+        let (reply, rx) = oneshot::channel();
+        self.invia(Command::CloseDangling { at, reply }).await?;
         rx.await?
     }
 
@@ -171,6 +303,40 @@ fn esegui(conn: &Connection, cmd: Command) {
         Command::IntervalsFor { user, range, reply } => {
             let _ = reply.send(intervalli_per(conn, user, range));
         }
+        Command::SavePosition {
+            user,
+            at,
+            position,
+            reply,
+        } => {
+            let _ = reply.send(salva_posizione(conn, user, at, position));
+        }
+        Command::ApplyTransition {
+            user,
+            to,
+            at,
+            reply,
+        } => {
+            let _ = reply.send(applica_transizione(conn, user, to, at));
+        }
+        Command::SaveMessage {
+            from_user,
+            to_user,
+            body,
+            at,
+            delivered,
+            reply,
+        } => {
+            let _ = reply.send(salva_messaggio(
+                conn, from_user, to_user, &body, at, delivered,
+            ));
+        }
+        Command::TakePending { user, reply } => {
+            let _ = reply.send(ritira_arretrati(conn, user));
+        }
+        Command::CloseDangling { at, reply } => {
+            let _ = reply.send(chiudi_intervalli_pendenti(conn, at));
+        }
     }
 }
 
@@ -204,7 +370,7 @@ fn crea_utente(
         Err(rusqlite::Error::SqliteFailure(e, _))
             if e.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
-            anyhow::bail!("username gia' in uso")
+            anyhow::bail!(UsernameTaken)
         }
         Err(e) => Err(e.into()),
     }
@@ -227,7 +393,11 @@ fn trova_utente(conn: &Connection, username: &str) -> anyhow::Result<Option<(Use
 }
 
 /// Restituisce le posizioni assunte dall'utente all'interno del range specificato
-fn posizioni_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::Result<Vec<FixedPosition>> {
+fn posizioni_per(
+    conn: &Connection,
+    user: UserId,
+    range: TimeRange,
+) -> anyhow::Result<Vec<FixedPosition>> {
     let mut statement = conn.prepare(
         "SELECT at, lat, lon FROM positions
          WHERE user_id = ?1 AND at >= ?2 AND at < ?3
@@ -235,9 +405,15 @@ fn posizioni_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::R
     )?;
     let rows = statement.query_map(
         (user.0, range.start.to_rfc3339(), range.end.to_rfc3339()),
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+            ))
+        },
     )?;
-    let mut output= Vec::new();
+    let mut output = Vec::new();
     for row in rows {
         let (at, lat, lon) = row?;
         let at = DateTime::parse_from_rfc3339(&at)?.with_timezone(&Utc);
@@ -247,7 +423,11 @@ fn posizioni_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::R
 }
 
 /// Restituisce gli intervalli di tempo registrati dall'utente nel range specificato.
-fn intervalli_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::Result<Vec<StateInterval>> {
+fn intervalli_per(
+    conn: &Connection,
+    user: UserId,
+    range: TimeRange,
+) -> anyhow::Result<Vec<StateInterval>> {
     let mut statement = conn.prepare(
         "SELECT state, start_at, end_at FROM state_intervals
          WHERE user_id = ?1 AND start_at < ?3
@@ -256,7 +436,13 @@ fn intervalli_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::
     )?;
     let rows = statement.query_map(
         (user.0, range.start.to_rfc3339(), range.end.to_rfc3339()),
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        },
     )?;
     let mut output = Vec::new();
     for row in rows {
@@ -267,7 +453,7 @@ fn intervalli_per(conn: &Connection, user: UserId, range: TimeRange) -> anyhow::
         let end = end_at
             .map(|s| DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)))
             .transpose()?;
-        output.push(StateInterval{ state, start, end });
+        output.push(StateInterval { state, start, end });
     }
     Ok(output)
 }
@@ -297,7 +483,11 @@ mod tests {
     #[test]
     fn test_posizioni_per_filtra_sul_range() {
         let conn = db_con_utente();
-        for (at, lat, lon) in [(utc(11), 45.0, 7.0), (utc(12), 45.5, 7.0), (utc(23), 46.0, 7.0)] {
+        for (at, lat, lon) in [
+            (utc(11), 45.0, 7.0),
+            (utc(12), 45.5, 7.0),
+            (utc(23), 46.0, 7.0),
+        ] {
             conn.execute(
                 "INSERT INTO positions (user_id, at, lat, lon) VALUES (1, ?1, ?2, ?3)",
                 (at.to_rfc3339(), lat, lon),
@@ -347,4 +537,132 @@ mod tests {
         assert_eq!(iv[1].state, UserState::Stopped);
         assert_eq!(iv[1].end, None); // l'intervallo aperto resta aperto
     }
+}
+
+/// Inserisce una posizione nello storico.
+///
+/// Gli istanti vanno in ISO 8601 UTC, lo stesso formato che `posizioni_per` si
+/// aspetta di rileggere: le due funzioni vanno tenute d'accordo.
+fn salva_posizione(
+    conn: &Connection,
+    user: UserId,
+    at: DateTime<Utc>,
+    position: Position,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO positions (user_id, at, lat, lon) VALUES (?1, ?2, ?3, ?4)",
+        (user.0, at.to_rfc3339(), position.lat, position.lon),
+    )?;
+    Ok(())
+}
+
+/// Chiude l'intervallo aperto dell'utente e ne apre uno nuovo, entrambi a `at`.
+///
+/// Le due istruzioni stanno in una TRANSAZIONE perche' devono valere insieme:
+/// se passasse solo la chiusura, l'utente resterebbe senza intervallo aperto e
+/// il suo stato successivo diventerebbe irrecuperabile; se passasse solo
+/// l'apertura, l'indice unico dello schema rifiuterebbe il secondo aperto.
+///
+/// Chiudere zero intervalli e' normale: succede al primo login di un utente,
+/// che non ne ha ancora nessuno.
+fn applica_transizione(
+    conn: &Connection,
+    user: UserId,
+    to: UserState,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let quando = at.to_rfc3339();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE state_intervals SET end_at = ?2
+         WHERE user_id = ?1 AND end_at IS NULL",
+        (user.0, &quando),
+    )?;
+    tx.execute(
+        "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+         VALUES (?1, ?2, ?3, NULL)",
+        (user.0, to.as_db_str(), &quando),
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Chiude tutti gli intervalli rimasti aperti, e restituisce quanti erano.
+///
+/// Serve dopo un arresto anomalo: se il server muore mentre dieci camionisti
+/// sono collegati, restano dieci intervalli senza fine, e ogni analisi
+/// successiva li conterebbe fino a "adesso". Si chiudono all'istante di avvio:
+/// non sappiamo quando il server sia morto davvero, e questa e' la scelta
+/// conservativa piu' semplice da spiegare.
+fn chiudi_intervalli_pendenti(conn: &Connection, at: DateTime<Utc>) -> anyhow::Result<usize> {
+    let n = conn.execute(
+        "UPDATE state_intervals SET end_at = ?1 WHERE end_at IS NULL",
+        [at.to_rfc3339()],
+    )?;
+    Ok(n)
+}
+
+/// Inserisce un messaggio nello storico della chat.
+fn salva_messaggio(
+    conn: &Connection,
+    from_user: Option<UserId>,
+    to_user: Option<UserId>,
+    body: &str,
+    at: DateTime<Utc>,
+    delivered: bool,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO messages (from_user_id, to_user_id, body, sent_at, delivered)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        (
+            from_user.map(|u| u.0),
+            to_user.map(|u| u.0),
+            body,
+            at.to_rfc3339(),
+            delivered as i64,
+        ),
+    )?;
+    Ok(())
+}
+
+/// Legge i messaggi arretrati di un utente e li marca come consegnati.
+///
+/// Le due operazioni stanno in una TRANSAZIONE: se la marcatura fallisse dopo
+/// la lettura, al login successivo l'utente riceverebbe di nuovo gli stessi
+/// messaggi. Meglio non consegnarli affatto che consegnarli due volte.
+///
+/// I broadcast sono esclusi: `to_user_id IS NULL` significa "a tutti quelli
+/// collegati in quel momento", e chi era assente non li deve recuperare.
+fn ritira_arretrati(
+    conn: &Connection,
+    user: UserId,
+) -> anyhow::Result<Vec<(String, DateTime<Utc>)>> {
+    let tx = conn.unchecked_transaction()?;
+
+    let arretrati = {
+        let mut statement = tx.prepare(
+            "SELECT body, sent_at FROM messages
+             WHERE to_user_id = ?1 AND delivered = 0
+             ORDER BY sent_at",
+        )?;
+        let righe = statement.query_map([user.0], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+
+        let mut out = Vec::new();
+        for riga in righe {
+            let (body, sent_at) = riga?;
+            let at = DateTime::parse_from_rfc3339(&sent_at)?.with_timezone(&Utc);
+            out.push((body, at));
+        }
+        out
+    };
+
+    tx.execute(
+        "UPDATE messages SET delivered = 1 WHERE to_user_id = ?1 AND delivered = 0",
+        [user.0],
+    )?;
+    tx.commit()?;
+
+    Ok(arretrati)
 }

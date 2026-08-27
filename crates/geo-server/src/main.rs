@@ -12,7 +12,8 @@ struct Args {
     #[arg(long, env = "GEO_BIND", default_value = "0.0.0.0:7878")]
     bind: SocketAddr,
 
-    /// Percorso del database. Mai relativo implicito: romperebbe R16.
+    /// Percorso del database. Mai relativo implicito: si romperebbe cambiando
+    /// directory di lavoro o piattaforma.
     #[arg(long, env = "GEO_DB", default_value = "georuggine.db")]
     db: PathBuf,
 
