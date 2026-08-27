@@ -13,4 +13,5 @@ clap = { workspace = true }
 tokio = { workspace = true }
 geo-core = { path = "../geo-core" }
 geo-protocol = { path = "../geo-protocol" }
+geo-net = { path = "../geo-net" }
 chrono = { workspace = true }

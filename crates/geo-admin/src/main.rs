@@ -37,8 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let mut current_user = args.username;
     let mut current_pass = args.password;
 
-    // 2. Sistema di Login (tentativi illimitati)
-    loop {
+    let framed = loop {
         let user = match &current_user {
             Some(u) => u.clone(),
             None => {
@@ -61,29 +60,40 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        if user == "admin" && pass == "123" {
-            println!("Login concesso. Avvio interfaccia...");
-            break;
-        } else {
-            println!("Credenziali errate. Accesso negato.\n");
-            // Resettiamo le credenziali per richiederle da input al prossimo ciclo
-            current_user = None;
-            current_pass = None;
+        let opts = geo_net::connection::ConnectOptions {
+            server_addr: args.server.clone(),
+            username: user,
+            password: pass,
+            role: geo_protocol::Role::Admin,
+            register: false,
+        };
+
+        match geo_net::connection::connect_and_auth(&opts).await {
+            Ok(f) => {
+                println!("Login concesso. Avvio interfaccia...");
+                break f;
+            }
+            Err(e) => {
+                println!("Errore di accesso: {}", e);
+                current_user = None;
+                current_pass = None;
+            }
         }
-    }
+    };
 
-    // Qui in futuro ci sarà la logica di connessione asincrona tramite tokio
-    // let stream = tokio::net::TcpStream::connect(&args.server).await?;
+    let (command_tx, command_rx) = tokio::sync::mpsc::channel(32);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(32);
 
-    // 3. Setup del terminale ed esecuzione UI Mock
+    tokio::spawn(geo_admin::network::run_admin_connection(framed, command_rx, event_tx));
+
+    // 3. Setup del terminale ed esecuzione UI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Il mock data deve trovarsi in assets rispetto alla cwd di esecuzione
-    let mut ui = AdminUi::new("assets/mock_admin_data.bin")?;
+    let mut ui = AdminUi::new(command_tx, event_rx);
     ui.run(&mut terminal)?;
 
     // Ripristino del terminale

@@ -1,4 +1,4 @@
-use ratatui::{
+﻿use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -6,69 +6,94 @@ use ratatui::{
     text::Line,
     Frame, Terminal,
 };
-use serde::{Deserialize, Serialize};
-use std::fs;
 use crossterm::event::{self, Event, KeyCode};
 use std::time::Duration;
-use geo_core::analytics::MovementReport;
-
 use std::collections::HashMap;
+use tokio::sync::mpsc;
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct MockData {
-    pub fleet: Vec<FleetEntry>,
-    pub chats: HashMap<String, Vec<ChatEntry>>,
-    pub query_report: MovementReport,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct FleetEntry {
-    pub user_id: String,
-    pub state: String,
-    pub last_pos: String,
-    pub last_update: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ChatEntry {
-    pub sender: String,
-    pub text: String,
-}
+use geo_core::analytics::MovementReport;
+use geo_core::{UserId, RangeSpec};
+use geo_protocol::{AdminMessage, AdminReply, FleetEntry};
 
 pub struct AdminUi {
-    pub data: MockData,
+    pub fleet: Vec<FleetEntry>,
+    pub chats: HashMap<UserId, Vec<(String, String)>>,
+    pub query_report: Option<Box<MovementReport>>,
     pub input: String,
-    pub data_path: String,
     pub selected_tab: usize,
     pub selected_chat_index: usize,
+    command_tx: mpsc::Sender<AdminMessage>,
+    event_rx: mpsc::Receiver<AdminReply>,
 }
 
 impl AdminUi {
-    pub fn new(data_path: &str) -> anyhow::Result<Self> {
-        let bytes = fs::read(data_path)?;
-        let data: MockData = geo_protocol::codec::decode(&bytes)?;
-        Ok(Self { 
-            data, 
+    pub fn new(command_tx: mpsc::Sender<AdminMessage>, event_rx: mpsc::Receiver<AdminReply>) -> Self {
+        Self { 
+            fleet: Vec::new(),
+            chats: HashMap::new(),
+            query_report: None,
             input: String::new(),
-            data_path: data_path.to_string(),
             selected_tab: 0,
             selected_chat_index: 0,
-        })
+            command_tx,
+            event_rx,
+        }
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> anyhow::Result<()> {
         loop {
+            // Process incoming network events
+            while let Ok(reply) = self.event_rx.try_recv() {
+                match reply {
+                    AdminReply::Fleet { entries } => {
+                        self.fleet = entries;
+                    }
+                    AdminReply::StateChanged { user, state, at } => {
+                        if let Some(entry) = self.fleet.iter_mut().find(|e| e.user == user) {
+                            entry.state = state;
+                            entry.last_update = Some(at);
+                        }
+                    }
+                    AdminReply::QueryResult(report) => {
+                        self.query_report = Some(report);
+                        self.selected_tab = 1; // Auto-switch to query tab
+                    }
+                    AdminReply::Chat { from, username, text, .. } => {
+                        self.chats.entry(from).or_default().push((username, text));
+                    }
+                    _ => {}
+                }
+            }
+
             terminal.draw(|f| self.draw(f))?;
+
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == crossterm::event::KeyEventKind::Press {
                         match key.code {
-                            KeyCode::Esc => break,
+                            KeyCode::Esc => {
+                                let _ = self.command_tx.try_send(AdminMessage::Logout);
+                                break;
+                            }
                             KeyCode::Tab => {
                                 self.selected_tab = (self.selected_tab + 1) % 2;
                             }
-                            KeyCode::BackTab => { // if supported
+                            KeyCode::BackTab => {
                                 self.selected_tab = (self.selected_tab + 1) % 2;
+                            }
+                            KeyCode::Char('m') | KeyCode::Char('M') => {
+                                self.selected_tab = 0;
+                            }
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                if self.selected_tab == 0 && !self.fleet.is_empty() {
+                                    let active_user = self.fleet[self.selected_chat_index].user;
+                                    let _ = self.command_tx.try_send(AdminMessage::Query { 
+                                        user: active_user, 
+                                        spec: RangeSpec::Today 
+                                    });
+                                } else {
+                                    self.input.push(match key.code { KeyCode::Char(c) => c, _ => ' ' });
+                                }
                             }
                             KeyCode::Up => {
                                 if self.selected_tab == 0 && self.selected_chat_index > 0 {
@@ -76,21 +101,25 @@ impl AdminUi {
                                 }
                             }
                             KeyCode::Down => {
-                                if self.selected_tab == 0 && self.selected_chat_index + 1 < self.data.fleet.len() {
+                                if self.selected_tab == 0 && self.selected_chat_index + 1 < self.fleet.len() {
                                     self.selected_chat_index += 1;
                                 }
                             }
                             KeyCode::Char(c) => self.input.push(c),
                             KeyCode::Backspace => { self.input.pop(); }
                             KeyCode::Enter => {
-                                if !self.input.is_empty() && self.selected_tab == 0 && !self.data.fleet.is_empty() {
-                                    let active_user = self.data.fleet[self.selected_chat_index].user_id.clone();
-                                    self.data.chats.entry(active_user).or_default().push(ChatEntry { sender: "ADMIN".to_string(), text: self.input.clone() });
-                                    self.input.clear();
+                                if !self.input.is_empty() && self.selected_tab == 0 && !self.fleet.is_empty() {
+                                    let active_user = self.fleet[self.selected_chat_index].user;
                                     
-                                    if let Ok(bytes) = geo_protocol::codec::encode(&self.data) {
-                                        let _ = fs::write(&self.data_path, bytes);
-                                    }
+                                    // Invia al server
+                                    let _ = self.command_tx.try_send(AdminMessage::SendDirect {
+                                        to: active_user,
+                                        text: self.input.clone(),
+                                    });
+
+                                    // Mostra subito in locale
+                                    self.chats.entry(active_user).or_default().push(("ADMIN".to_string(), self.input.clone()));
+                                    self.input.clear();
                                 }
                             }
                             _ => {}
@@ -146,14 +175,28 @@ impl AdminUi {
             .height(1)
             .bottom_margin(1);
 
-        let rows = self.data.fleet.iter().map(|item| {
+        let rows = self.fleet.iter().enumerate().map(|(i, item)| {
+            let pos_str = match &item.last_position {
+                Some(p) => format!("{:.4}, {:.4}", p.lat, p.lon),
+                None => "Sconosciuta".to_string(),
+            };
+            let update_str = match item.last_update {
+                Some(dt) => dt.format("%H:%M:%S").to_string(),
+                None => "-".to_string(),
+            };
+
             let cells = vec![
-                Cell::from(item.user_id.clone()),
-                Cell::from(item.state.clone()),
-                Cell::from(item.last_pos.clone()),
-                Cell::from(item.last_update.clone()),
+                Cell::from(item.username.clone()),
+                Cell::from(format!("{:?}", item.state)),
+                Cell::from(pos_str),
+                Cell::from(update_str),
             ];
-            Row::new(cells).height(1)
+            
+            let mut row = Row::new(cells).height(1);
+            if i == self.selected_chat_index {
+                row = row.style(Style::default().bg(Color::DarkGray).fg(Color::Yellow));
+            }
+            row
         });
 
         let table = Table::new(rows, [
@@ -163,45 +206,50 @@ impl AdminUi {
             Constraint::Percentage(25),
         ])
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Flotta (Live) "));
+        .block(Block::default().borders(Borders::ALL).title(" Flotta (Live) - Premi Q per Report "));
 
         f.render_widget(table, area);
     }
 
     fn draw_queries(&self, f: &mut Frame, area: Rect) {
-        let rep = &self.data.query_report;
-        let moving_secs = rep.moving_time.num_seconds();
-        let paused_secs = rep.paused_time.num_seconds();
-        let disc_secs = rep.disconnected_time.num_seconds();
-        
-        let text = format!(
-            "Utente analizzato: {}\n\n\
-             Periodo di analisi: {}\n\
-             - Da: {}\n\
-             - A:  {}\n\n\
-             Distanza totale percorsa: {:.2} km\n\
-             Velocità media (in moto): {:.1} km/h\n\
-             Velocità media (globale): {:.1} km/h\n\n\
-             Tempo in movimento: {} min {} sec\n\
-             Tempo in pausa: {} min {} sec ({} soste effettuate)\n\
-             Tempo disconnesso: {} min {} sec",
-            rep.user,
-            rep.spec.label(),
-            rep.range.start,
-            rep.range.end,
-            rep.distance_km,
-            rep.avg_speed_moving_kmh,
-            rep.avg_speed_overall_kmh,
-            moving_secs / 60, moving_secs % 60,
-            paused_secs / 60, paused_secs % 60, rep.pause_count,
-            disc_secs / 60, disc_secs % 60
-        );
+        if let Some(rep) = &self.query_report {
+            let moving_secs = rep.moving_time.num_seconds();
+            let paused_secs = rep.paused_time.num_seconds();
+            let disc_secs = rep.disconnected_time.num_seconds();
+            
+            let text = format!(
+                "Utente analizzato: {}\n\n\
+                 Periodo di analisi: {}\n\
+                 - Da: {}\n\
+                 - A:  {}\n\n\
+                 Distanza totale percorsa: {:.2} km\n\
+                 Velocità media (in moto): {:.1} km/h\n\
+                 Velocità media (globale): {:.1} km/h\n\n\
+                 Tempo in movimento: {} min {} sec\n\
+                 Tempo in pausa: {} min {} sec ({} soste effettuate)\n\
+                 Tempo disconnesso: {} min {} sec",
+                rep.user,
+                rep.spec.label(),
+                rep.range.start,
+                rep.range.end,
+                rep.distance_km,
+                rep.avg_speed_moving_kmh,
+                rep.avg_speed_overall_kmh,
+                moving_secs / 60, moving_secs % 60,
+                paused_secs / 60, paused_secs % 60, rep.pause_count,
+                disc_secs / 60, disc_secs % 60
+            );
 
-        let p = Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title(" Report Analitico "))
-            .wrap(Wrap { trim: true });
+            let p = Paragraph::new(text)
+                .block(Block::default().borders(Borders::ALL).title(" Report Analitico "))
+                .wrap(Wrap { trim: true });
 
-        f.render_widget(p, area);
+            f.render_widget(p, area);
+        } else {
+            let p = Paragraph::new("Nessun report generato. Seleziona un utente e premi Q nella flotta.")
+                .block(Block::default().borders(Borders::ALL).title(" Report Analitico "));
+            f.render_widget(p, area);
+        }
     }
 
     fn draw_chat(&self, f: &mut Frame, area: Rect) {
@@ -212,13 +260,13 @@ impl AdminUi {
 
         // Sinistra: Lista Utenti per la chat
         let mut list_items = Vec::new();
-        for (i, truck) in self.data.fleet.iter().enumerate() {
+        for (i, truck) in self.fleet.iter().enumerate() {
             let style = if i == self.selected_chat_index {
                 Style::default().bg(Color::DarkGray).fg(Color::Yellow)
             } else {
                 Style::default()
             };
-            list_items.push(ratatui::widgets::ListItem::new(truck.user_id.clone()).style(style));
+            list_items.push(ratatui::widgets::ListItem::new(truck.username.clone()).style(style));
         }
         let list = ratatui::widgets::List::new(list_items)
             .block(Block::default().borders(Borders::ALL).title(" Utenti (\u{2191}\u{2193}) "));
@@ -231,15 +279,15 @@ impl AdminUi {
             .split(h_chunks[1]);
 
         let mut chat_history = String::new();
-        let active_user = if !self.data.fleet.is_empty() {
-            self.data.fleet[self.selected_chat_index].user_id.clone()
+        let (active_user_id, active_username) = if !self.fleet.is_empty() {
+            (self.fleet[self.selected_chat_index].user, self.fleet[self.selected_chat_index].username.clone())
         } else {
-            String::new()
+            (UserId(0), String::new())
         };
 
-        if let Some(history) = self.data.chats.get(&active_user) {
-            for msg in history {
-                chat_history.push_str(&format!("[{}]: {}\n", msg.sender, msg.text));
+        if let Some(history) = self.chats.get(&active_user_id) {
+            for (sender, text) in history {
+                chat_history.push_str(&format!("[{}]: {}\n", sender, text));
             }
         }
 
@@ -253,7 +301,7 @@ impl AdminUi {
         };
 
         let history_p = Paragraph::new(chat_history)
-            .block(Block::default().borders(Borders::ALL).title(format!(" Chat con {} ", active_user)))
+            .block(Block::default().borders(Borders::ALL).title(format!(" Chat con {} ", active_username)))
             .wrap(Wrap { trim: true }) 
             .scroll((scroll_offset, 0));
 
