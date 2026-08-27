@@ -490,8 +490,11 @@ name = "geo-admin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "crossterm",
+ "geo-core",
+ "geo-protocol",
  "ratatui",
  "serde",
  "serde_json",

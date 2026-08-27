@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Il mock data deve trovarsi in assets rispetto alla cwd di esecuzione
-    let mut ui = AdminUi::new("assets/mock_admin_data.json")?;
+    let mut ui = AdminUi::new("assets/mock_admin_data.bin")?;
     ui.run(&mut terminal)?;
 
     // Ripristino del terminale
