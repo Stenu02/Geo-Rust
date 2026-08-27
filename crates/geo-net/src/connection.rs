@@ -35,6 +35,22 @@ pub struct ConnectOptions {
     pub register: bool,
 }
 
+/// policy per gestire i tempi di riconnessione
+#[derive(Debug, Clone)]
+pub struct ReconnectPolicy {
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        Self {
+            initial_backoff: Duration::from_secs(2),
+            max_backoff: Duration::from_secs(60),
+        }
+    }
+}
+
 /// canali di comunicazione tra il main e il task di rete in background
 pub struct ClientHandle {
     pub command_tx: mpsc::Sender<Command>,
@@ -60,7 +76,7 @@ pub async fn recv_msg<T: DeserializeOwned>(framed: &mut ClientFramed) -> anyhow:
 
 impl ClientHandle {
     /// stabilisce la connessione iniziale bloccante per validare le credenziali
-    pub async fn connect(opts: ConnectOptions) -> anyhow::Result<Self> {
+    pub async fn connect(opts: ConnectOptions, policy: ReconnectPolicy) -> anyhow::Result<Self> {
         // ClientHandle gestisce esclusivamente gli eventi specifici del camionista
         if opts.role != Role::Trucker {
             anyhow::bail!("ClientHandle è progettato solo per i camionisti.");
@@ -71,7 +87,7 @@ impl ClientHandle {
         let (command_tx, command_rx) = mpsc::channel::<Command>(32);
         let (event_tx, event_rx) = mpsc::channel::<Event>(32);
 
-        tokio::spawn(run_connection(framed, command_rx, event_tx, opts));
+        tokio::spawn(run_connection(framed, command_rx, event_tx, opts, policy));
 
         Ok(Self { command_tx, event_rx })
     }
@@ -137,9 +153,10 @@ async fn run_connection(
     mut command_rx: mpsc::Receiver<Command>,
     event_tx: mpsc::Sender<Event>,
     opts: ConnectOptions,
+    policy: ReconnectPolicy,
 ) {
     let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
-    let mut backoff = Duration::from_secs(2);
+    let mut backoff = policy.initial_backoff;
 
     // notifica iniziale alla UI
     let _ = event_tx.send(Event::Connected).await;
@@ -158,9 +175,9 @@ async fn run_connection(
                     }
                     Some(Command::Logout) => {
                         let _ = send_msg(&mut framed, &ClientMessage::Logout).await;
-                        break; // termina il task
+                        break;
                     }
-                    None => break, // canale distrutto dal main
+                    None => break,
                 }
             }
             // elabora i messaggi in ingresso dal server
@@ -196,7 +213,8 @@ async fn run_connection(
                             match connect_and_auth(&reconnect_opts).await {
                                 Ok(new_framed) => {
                                     framed = new_framed;
-                                    backoff = Duration::from_secs(2); // resetta il tempo di attesa
+                                    // ripristina il backoff usando la policy
+                                    backoff = policy.initial_backoff;
 
                                     // avvisa la UI che si è di nuovo online
                                     let _ = event_tx.send(Event::Connected).await;
@@ -204,8 +222,8 @@ async fn run_connection(
                                     break;
                                 }
                                 Err(_) => {
-                                    // raddoppia l'attesa fino a un massimo di 60s
-                                    backoff = (backoff * 2).min(Duration::from_secs(60));
+                                    // scala il backoff usando la policy
+                                    backoff = (backoff * 2).min(policy.max_backoff);
                                 }
                             }
                         }

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 geo-core = { path = "../geo-core" }
 geo-protocol = { path = "../geo-protocol" }
+geo-server = { path = "../geo-server" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
