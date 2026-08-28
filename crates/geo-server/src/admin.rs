@@ -48,8 +48,8 @@ impl AdminHandler {
 mod tests {
     use super::*;
     use chrono::{Duration, TimeZone};
-    use geo_core::{Position, Timestamped, UserState};
     use geo_core::geo_math::haversine_km;
+    use geo_core::{Position, Timestamped, UserState};
 
     #[test]
     fn test_admin_query_roundtrip() {
@@ -59,8 +59,8 @@ mod tests {
         // Ancoriamo i dati dentro il giorno risolto, relativi al suo inizio.
         let at = |h: i64| range.start + Duration::hours(h);
 
-        let pos1 =  Position::new(45.0, 7.0);
-        let pos2 =  Position::new(45.5, 7.0);
+        let pos1 = Position::new(45.0, 7.0);
+        let pos2 = Position::new(45.5, 7.0);
 
         let intervals = [
             StateInterval::closed(UserState::Moving, at(2), at(3)),
@@ -71,10 +71,15 @@ mod tests {
             Timestamped::new(at(3), Position::new(45.5, 7.0)),
         ];
 
-        let distance= haversine_km(&pos1, &pos2);
+        let distance = haversine_km(&pos1, &pos2);
 
         let report = AdminHandler::build_report(
-            UserId(1), RangeSpec::Today, range, &intervals, &positions, now,
+            UserId(1),
+            RangeSpec::Today,
+            range,
+            &intervals,
+            &positions,
+            now,
         );
 
         // I metadati della query sono riportati e il periodo e' quello risolto.

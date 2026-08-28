@@ -29,3 +29,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Solo su Unix: serve a `getrusage` in cpu_log.rs. Su Windows le due funzioni
+# equivalenti sono dichiarate a mano, senza aggiungere librerie.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

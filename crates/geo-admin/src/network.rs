@@ -11,8 +11,16 @@ pub async fn run_admin_connection(
 ) {
     let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
 
-    // Richiede la flotta iniziale
-    let _ = geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await;
+    // La tabella flotta non arriva da sola: il server manda `Fleet` SOLO in
+    // risposta a una `ListFleet`, e non notifica di sua iniziativa chi entra o
+    // esce. Chiedendola una volta sola la console mostrerebbe per sempre la
+    // fotografia scattata al login: un camionista collegato dopo non
+    // comparirebbe mai, e stato e posizione di quelli gia' in tabella
+    // resterebbero congelati.
+    //
+    // Il primo tick di `interval` scatta subito, quindi questo timer copre
+    // anche la richiesta iniziale.
+    let mut refresh_flotta = tokio::time::interval(Duration::from_secs(2));
 
     loop {
         tokio::select! {
@@ -39,6 +47,10 @@ pub async fn run_admin_connection(
                         break;
                     }
                 }
+            }
+            // Ridomanda la flotta: e' cosi' che la tabella resta viva.
+            _ = refresh_flotta.tick() => {
+                let _ = geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await;
             }
             // Mantiene vivo il socket (Heartbeat)
             _ = heartbeat.tick() => {

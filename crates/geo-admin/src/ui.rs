@@ -47,6 +47,14 @@ impl AdminUi {
                 match reply {
                     AdminReply::Fleet { entries } => {
                         self.fleet = entries;
+                        // Ora che la flotta cambia mentre la console e' aperta,
+                        // il camionista selezionato puo' scollegarsi: l'indice
+                        // resterebbe oltre la fine del vettore e il primo
+                        // accesso (invio di un messaggio, disegno della chat)
+                        // andrebbe fuori dai limiti.
+                        self.selected_chat_index = self
+                            .selected_chat_index
+                            .min(self.fleet.len().saturating_sub(1));
                     }
                     AdminReply::StateChanged { user, state, at } => {
                         if let Some(entry) = self.fleet.iter_mut().find(|e| e.user == user) {
