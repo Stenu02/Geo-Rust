@@ -97,15 +97,6 @@ impl Server {
             self.shutdown.clone(),
         );
 
-        // Registrazione periodica del tempo di CPU. Il primo campione viene
-        // scritto subito: e' il consumo a riposo, prima che arrivi qualcuno.
-        let misuratore = cpu_log::spawn(
-            self.config.log_path.clone(),
-            cpu_log::INTERVALLO,
-            self.registry.clone(),
-            self.shutdown.clone(),
-        );
-
         tracing::info!(addr = %self.local_addr()?, "server in ascolto");
 
         loop {
@@ -135,7 +126,6 @@ impl Server {
         // Si aspetta che il controllo periodico chiuda, cosi' un'eventuale
         // scrittura in corso arriva a termine prima che il processo esca.
         let _ = valutatore.await;
-        let _ = misuratore.await;
 
         Ok(())
     }
