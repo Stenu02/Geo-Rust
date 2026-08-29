@@ -5,6 +5,7 @@ Cargo.lock
 *.db-journal
 *.db-wal
 *.db-shm
+*csv
 /logs
 *.log
 .DS_Store
