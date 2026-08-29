@@ -1,9 +1,13 @@
-﻿use geo_protocol::{AdminMessage, AdminReply};
+//! Gestione della connessione di rete verso il server per l'amministratore.
+//!
+//! Si occupa di instradare i messaggi in uscita dalla UI verso il socket TCP e viceversa.
+
+use geo_protocol::{AdminMessage, AdminReply};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use geo_net::connection::ClientFramed;
 
-/// loop asincrono: smista comandi dalla UI al server e inoltra le risposte dal server alla UI
+/// Loop asincrono: smista i comandi dalla UI al server e inoltra le risposte dal server alla UI.
 pub async fn run_admin_connection(
     mut framed: ClientFramed,
     mut command_rx: mpsc::Receiver<AdminMessage>,

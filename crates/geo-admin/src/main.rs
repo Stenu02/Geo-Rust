@@ -1,3 +1,9 @@
+//! Punto di ingresso dell'applicazione `geo-admin`.
+//!
+//! Effettua il parsing degli argomenti da riga di comando, gestisce il processo
+//! di login, e fa partire in background la connessione di rete e in foreground 
+//! l'interfaccia utente (TUI).
+
 use clap::Parser;
 use geo_admin::ui::AdminUi;
 use std::io::{self, Write};
@@ -7,6 +13,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
+/// Argomenti da riga di comando per la console dell'amministratore.
 #[derive(Parser)]
 #[command(name = "geo-admin", about = "Console amministratore GeoRuggine")]
 struct Args {
@@ -54,9 +61,7 @@ async fn main() -> anyhow::Result<()> {
             None => {
                 print!("Password: ");
                 io::stdout().flush()?;
-                let mut input = String::new();
-                io::stdin().read_line(&mut input)?;
-                input.trim().to_string()
+                rpassword::read_password()?
             }
         };
 
@@ -102,4 +107,18 @@ async fn main() -> anyhow::Result<()> {
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_args_parsing() {
+        let args = Args::try_parse_from(["geo-admin", "--server", "192.168.1.1:8080", "--username", "admin", "--password", "secret"]).unwrap();
+        assert_eq!(args.server, "192.168.1.1:8080");
+        assert_eq!(args.username, Some("admin".to_string()));
+        assert_eq!(args.password, Some("secret".to_string()));
+    }
 }

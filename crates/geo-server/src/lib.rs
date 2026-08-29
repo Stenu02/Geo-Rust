@@ -89,13 +89,43 @@ impl Server {
 
     /// Ciclo di accettazione, fino alla richiesta di chiusura.
     pub async fn run(self) -> anyhow::Result<()> {
-        // Il controllo periodico degli stati vive per tutta la durata del server
-        // e si ferma con lo stesso segnale di chiusura.
         let valutatore = evaluator::spawn(
             self.registry.clone(),
             self.storage.clone(),
             self.shutdown.clone(),
         );
+
+        let shutdown_clone = self.shutdown.clone();
+        let log_path = self.config.log_path.clone();
+        let cpu_logger = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+            // First tick fires immediately, so let's skip the write on the very first tick if we want,
+            // or just write it. Let's write the cumulative CPU time every 2 minutes.
+            // Creiamo il file log e l'header se non esiste
+            if !log_path.exists() {
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                    use std::io::Write;
+                    let _ = writeln!(f, "timestamp,cpu_time_ms");
+                }
+            }
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if let Ok(cpu_dur) = cpu_log::get_cpu_time() {
+                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                                use std::io::Write;
+                                let now = chrono::Utc::now().to_rfc3339();
+                                let _ = writeln!(f, "{},{}", now, cpu_dur.as_millis());
+                            }
+                        }
+                    }
+                    _ = shutdown_clone.cancelled() => {
+                        break;
+                    }
+                }
+            }
+        });
 
         tracing::info!(addr = %self.local_addr()?, "server in ascolto");
 
@@ -126,6 +156,7 @@ impl Server {
         // Si aspetta che il controllo periodico chiuda, cosi' un'eventuale
         // scrittura in corso arriva a termine prima che il processo esca.
         let _ = valutatore.await;
+        let _ = cpu_logger.await;
 
         Ok(())
     }
