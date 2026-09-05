@@ -51,6 +51,19 @@ impl ClientUi {
         execute!(stdout, EnterAlternateScreen)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
+        let (key_tx, mut key_rx) = mpsc::channel::<CEvent>(16);
+        tokio::task::spawn_blocking(move || {
+            loop {
+                if event::poll(Duration::from_millis(100)).unwrap_or(false) {
+                    if let Ok(ev) = event::read() {
+                        if key_tx.blocking_send(ev).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
         loop {
             terminal.draw(|f| {
                 let chunks = Layout::default()
@@ -63,7 +76,7 @@ impl ClientUi {
                     .split(f.size());
 
                 let pos_str = self.last_pos.map_or_else(
-                    || "In attesa... (usa /pos lat,lon per input manuale).".to_string(),
+                    || "In attesa... (usa /pos lat,lon per input manuale)".to_string(),
                     |p| format!("Lat: {:.5}, Lon: {:.5}.", p.lat, p.lon)
                 );
 
@@ -120,14 +133,8 @@ impl ClientUi {
                 Ok(_) = pos_rx.changed() => self.last_pos = *pos_rx.borrow(),
 
                 // Tastiera su thread separato per evitare blocking
-                input_event = tokio::task::spawn_blocking(|| {
-                    if event::poll(Duration::from_millis(100)).unwrap_or(false) {
-                        event::read().ok()
-                    } else {
-                        None
-                    }
-                }) => {
-                    if let Ok(Some(CEvent::Key(key))) = input_event {
+                Some(input_event) = key_rx.recv() => {
+                    if let CEvent::Key(key) = input_event {
                         if key.kind == KeyEventKind::Press {
                             match key.code {
                                 KeyCode::Esc => break,
