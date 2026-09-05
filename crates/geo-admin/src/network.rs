@@ -13,10 +13,12 @@ pub async fn run_admin_connection(
     mut command_rx: mpsc::Receiver<AdminMessage>,
     event_tx: mpsc::Sender<AdminReply>,
 ) {
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
 
     // Richiede la flotta iniziale
-    let _ = geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await;
+    if geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await.is_err() {
+        return;
+    }
 
     loop {
         tokio::select! {
@@ -24,8 +26,11 @@ pub async fn run_admin_connection(
             cmd = command_rx.recv() => {
                 match cmd {
                     Some(msg) => {
-                        let _ = geo_net::connection::send_msg(&mut framed, &msg).await;
-                        if matches!(msg, AdminMessage::Logout) {
+                        let is_logout = matches!(msg, AdminMessage::Logout);
+                        if geo_net::connection::send_msg(&mut framed, &msg).await.is_err() {
+                            break;
+                        }
+                        if is_logout {
                             break;
                         }
                     }
@@ -44,9 +49,15 @@ pub async fn run_admin_connection(
                     }
                 }
             }
-            // Mantiene vivo il socket (Heartbeat)
+            // Mantiene vivo il socket (Heartbeat) e aggiorna la flotta
             _ = heartbeat.tick() => {
-                let _ = geo_net::connection::send_msg(&mut framed, &AdminMessage::Heartbeat).await;
+                if geo_net::connection::send_msg(&mut framed, &AdminMessage::Heartbeat).await.is_err() {
+                    break;
+                }
+                // Richiede la flotta aggiornata per visualizzare nuovi utenti
+                if geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await.is_err() {
+                    break;
+                }
             }
         }
     }

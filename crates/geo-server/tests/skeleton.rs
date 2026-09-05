@@ -27,7 +27,6 @@ fn config() -> ServerConfig {
         // file condiviso li farebbe bloccare a vicenda sul lock SQLite.
         db_path: PathBuf::from(":memory:"),
         log_path: PathBuf::from("test.csv"),
-        time_scale: 1,
     }
 }
 
@@ -87,7 +86,7 @@ async fn autenticato(addr: SocketAddr, nome: &str) -> (Wire, UserId) {
         &mut wire,
         &ClientMessage::Register {
             username: nome.into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -96,7 +95,7 @@ async fn autenticato(addr: SocketAddr, nome: &str) -> (Wire, UserId) {
         &mut wire,
         &ClientMessage::Login {
             username: nome.into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -200,7 +199,7 @@ async fn registrazione_e_login_rispondono() {
         &mut wire,
         &ClientMessage::Register {
             username: "camion01".into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -213,7 +212,7 @@ async fn registrazione_e_login_rispondono() {
         &mut wire,
         &ClientMessage::Login {
             username: "camion01".into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -278,7 +277,7 @@ async fn registrazione_duplicata_rifiutata() {
         &mut wire,
         &ClientMessage::Register {
             username: "camion01".into(),
-            password: "altra".into(),
+            password: "altrapassword".into(),
         },
     )
     .await;
@@ -299,7 +298,7 @@ async fn password_sbagliata_rifiutata() {
         &mut wire,
         &ClientMessage::Register {
             username: "camion01".into(),
-            password: "giusta".into(),
+            password: "giustissima".into(),
         },
     )
     .await;
@@ -356,7 +355,7 @@ async fn secondo_login_sulla_stessa_sessione_rifiutato() {
         &mut wire,
         &ClientMessage::Login {
             username: "camion01".into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -841,7 +840,7 @@ async fn i_messaggi_offline_arrivano_al_login_successivo() {
         &mut c,
         &ClientMessage::Login {
             username: "camion01".into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -881,7 +880,7 @@ async fn gli_arretrati_non_vengono_consegnati_due_volte() {
         &mut c,
         &ClientMessage::Login {
             username: "camion01".into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -896,7 +895,7 @@ async fn gli_arretrati_non_vengono_consegnati_due_volte() {
         &mut c,
         &ClientMessage::Login {
             username: "camion01".into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -931,7 +930,7 @@ async fn un_annuncio_non_finisce_nella_coda_offline() {
         &mut c,
         &ClientMessage::Login {
             username: "camion01".into(),
-            password: "segreto".into(),
+            password: "segretissima".into(),
         },
     )
     .await;
@@ -941,5 +940,53 @@ async fn un_annuncio_non_finisce_nella_coda_offline() {
         esito.is_err(),
         "un broadcast non deve essere recuperato dopo"
     );
+    shutdown.cancel();
+}
+
+/// La registrazione applica gli stessi controlli della creazione
+/// dell'amministratore da riga di comando: una password corta viene rifiutata
+/// prima ancora di calcolarne l'hash.
+#[tokio::test]
+async fn registrazione_con_password_corta_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = collega(addr, Role::Trucker).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Register {
+            username: "camion01".into(),
+            password: "corta".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidCredentials),
+        altro => panic!("attesa password rifiutata, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+/// Un username vuoto o con spazi non deve creare un account.
+#[tokio::test]
+async fn registrazione_con_username_non_valido_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+
+    for nome in ["", " camion01", "camion 01"] {
+        let mut wire = collega(addr, Role::Trucker).await;
+        invia(
+            &mut wire,
+            &ClientMessage::Register {
+                username: nome.into(),
+                password: "segretissima".into(),
+            },
+        )
+        .await;
+
+        match ricevi::<ServerMessage>(&mut wire).await {
+            ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidCredentials),
+            altro => panic!("atteso rifiuto per {nome:?}, ricevuto {altro:?}"),
+        }
+    }
     shutdown.cancel();
 }

@@ -5,6 +5,7 @@ use clap::Parser;
 use geo_server::{auth, storage::StorageHandle, Server, ServerConfig};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 #[command(name = "geo-server", about = "Server GeoRuggine")]
@@ -19,10 +20,6 @@ struct Args {
 
     #[arg(long, env = "GEO_LOG", default_value = "cpu_usage.csv")]
     log: PathBuf,
-
-    /// Accelerazione temporale per la demo. Default 1 = tempi reali di specifica.
-    #[arg(long, default_value_t = 1)]
-    time_scale: u32,
 
     /// Crea un account amministratore e termina, senza avviare il server.
     ///
@@ -57,11 +54,30 @@ async fn main() -> anyhow::Result<()> {
         bind: args.bind,
         db_path: args.db,
         log_path: args.log,
-        time_scale: args.time_scale,
     })
     .await?;
 
+    // Il segnale va agganciato PRIMA di `run`, che consuma il server.
+    ascolta_interruzione(server.shutdown_handle());
+
     server.run().await
+}
+
+
+fn ascolta_interruzione(chiusura: CancellationToken) {
+    tokio::spawn(async move {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "impossibile ascoltare Ctrl-C");
+            return;
+        }
+        tracing::info!("Ctrl-C ricevuto: chiusura ordinata, premere ancora per uscire subito");
+        chiusura.cancel();
+
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::warn!("secondo Ctrl-C: uscita immediata");
+            std::process::exit(130);
+        }
+    });
 }
 
 /// Crea un account con ruolo amministratore e termina.
