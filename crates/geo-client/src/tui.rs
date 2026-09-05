@@ -2,7 +2,7 @@
 //! Interfaccia a terminale divisa in 3 sezioni
 //! Implementa chat bidirezionale e inserimento coordinate manuale
 //! Gira all'interno di un loop asincrono
-//! La lettura bloccante della tastiera viene isolata in spawn_blocking per non
+//! La lettura bloccante della tastiera viene eseguita su un thread separato per non
 //! congelare l'elaborazione dei pacchetti di rete in ingresso
 
 use crossterm::{
