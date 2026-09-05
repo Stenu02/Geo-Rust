@@ -202,6 +202,22 @@ async fn trucker_loop(
         match decode::<ClientMessage>(&frame[..])? {
             //Registrazione
             ClientMessage::Register { username, password } => {
+                // Prima dell'hash, non dopo: Argon2 costa una trentina di
+                // millisecondi di CPU pura, e una registrazione destinata a
+                // essere rifiutata non deve farli pagare al server.
+                if let Err(motivo) = auth::valida_credenziali(&username, &password) {
+                    tracing::warn!(%username, %motivo, "registrazione rifiutata");
+                    send(
+                        wire,
+                        &ServerMessage::Error {
+                            code: ErrorCode::InvalidCredentials,
+                            detail: motivo,
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+
                 let phc = auth::hash_password_async(password).await?;
                 match storage.create_user(&username, &phc, "trucker").await {
                     Ok(user) => {
