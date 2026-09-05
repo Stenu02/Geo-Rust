@@ -13,7 +13,7 @@ pub async fn run_admin_connection(
     mut command_rx: mpsc::Receiver<AdminMessage>,
     event_tx: mpsc::Sender<AdminReply>,
 ) {
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
 
     // Richiede la flotta iniziale
     if geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await.is_err() {
@@ -49,9 +49,13 @@ pub async fn run_admin_connection(
                     }
                 }
             }
-            // Mantiene vivo il socket (Heartbeat)
+            // Mantiene vivo il socket (Heartbeat) e aggiorna la flotta
             _ = heartbeat.tick() => {
                 if geo_net::connection::send_msg(&mut framed, &AdminMessage::Heartbeat).await.is_err() {
+                    break;
+                }
+                // Richiede la flotta aggiornata per visualizzare nuovi utenti
+                if geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await.is_err() {
                     break;
                 }
             }

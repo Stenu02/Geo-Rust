@@ -5,7 +5,7 @@
 //! l'interfaccia utente (TUI).
 
 use clap::Parser;
-use geo_admin::ui::AdminUi;
+use geo_admin::tui::AdminUi;
 use std::io::{self, Write};
 use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},

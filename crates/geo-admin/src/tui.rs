@@ -246,7 +246,27 @@ impl AdminUi {
             let mut disconnected = false;
             loop {
                 match self.event_rx.try_recv() {
-                    Ok(reply) => self.state.handle_network_reply(reply),
+                    Ok(reply) => {
+                        let mut request_fleet = false;
+                        match &reply {
+                            AdminReply::StateChanged { user, .. } => {
+                                if !self.state.fleet.iter().any(|e| e.user == *user) {
+                                    request_fleet = true;
+                                }
+                            }
+                            AdminReply::Chat { from, .. } => {
+                                if !self.state.fleet.iter().any(|e| e.user == *from) {
+                                    request_fleet = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                        self.state.handle_network_reply(reply);
+                        
+                        if request_fleet {
+                            let _ = self.command_tx.try_send(AdminMessage::ListFleet);
+                        }
+                    },
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                         disconnected = true;
