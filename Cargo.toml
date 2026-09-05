@@ -43,3 +43,16 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+# Argon2 e' volutamente costoso, e senza ottimizzazioni lo diventa 9 volte
+# tanto: 272 ms per hash in debug contro 29 in release. I test ne fanno un
+# centinaio, quindi la suite passava da secondi a minuti.
+#
+# Questo compila SOLO argon2 e la sua base crittografica con le ottimizzazioni,
+# lasciando il resto del progetto in debug: si tengono i tempi di test
+# ragionevoli senza perdere le informazioni di debug sul proprio codice.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

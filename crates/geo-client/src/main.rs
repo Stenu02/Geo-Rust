@@ -3,7 +3,7 @@ use geo_client::simulator::{PositionSimulator, Strategy};
 use std::path::PathBuf;
 use std::time::Duration;
 use geo_core::Position;
-use geo_net::connection::{ClientHandle, Command, ConnectOptions};
+use geo_net::connection::{ClientHandle, Command, ConnectOptions, ReconnectPolicy};
 use geo_protocol::Role;
 use tokio::sync::watch;
 
@@ -104,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
         register: args.register,
     };
 
-    let handle = ClientHandle::connect(opts).await?;
+    let handle = ClientHandle::connect(opts, ReconnectPolicy::default()).await?;
     tracing::info!("Connessione al server stabilita.");
 
     let scale = args.time_scale.max(1);

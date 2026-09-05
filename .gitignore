@@ -11,3 +11,6 @@ Cargo.lock
 .DS_Store
 .idea/
 .vscode/
+
+*.csv
+!assets/tracks/*.csv

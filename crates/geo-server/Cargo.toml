@@ -9,10 +9,6 @@ edition = "2021"
 name = "geo-server"
 path = "src/main.rs"
 
-[[bin]]
-name = "geo-supervisor"
-path = "src/bin/supervisor.rs"
-
 [dependencies]
 geo-core = { path = "../geo-core" }
 geo-protocol = { path = "../geo-protocol" }
