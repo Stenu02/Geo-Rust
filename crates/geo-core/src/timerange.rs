@@ -1,18 +1,18 @@
-//! Programmable analysis periods (R11).
+//! Periodi di analisi programmabili (R11).
 //!
-//! DECISIONS TO DOCUMENT IN THE REPORT:
-//! - local time zone (not UTC): "current day" is a local concept.
-//!   Instants stay in UTC internally, the conversion happens only here.
-//! - ISO week: Monday to Sunday
-//! - month: calendar month
-//! - watch out for daylight saving time: on switch days a "day" lasts 23 or 25 hours
+//! DECISIONI DA DOCUMENTARE NEL REPORT:
+//! - fuso orario locale (non UTC): "giorno corrente" è un concetto locale.
+//!   Gli istanti restano in UTC internamente, la conversione avviene solo qui.
+//! - settimana ISO: da lunedì a domenica
+//! - mese: mese di calendario
+//! - check in caso di cambiamento ora legale / ora solare: nei giorni di cambio un "giorno" dura 23 o 25 ore
 
 use chrono::{DateTime, Duration, Utc, Datelike, Months, TimeZone, NaiveDate};
 use serde::{Deserialize, Serialize};
 use crate::COMPANY_TZ;
 
-/// Which period is to be analyzed. It is what the administrator selects
-/// in the interface and what travels through the protocol.
+/// Quale periodo si vuole analizzare. E' cio' che l'amministratore sceglie
+/// nell'interfaccia e che viaggia nel protocollo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RangeSpec {
     Today,
@@ -23,17 +23,17 @@ pub enum RangeSpec {
 impl RangeSpec {
     pub fn label(&self) -> &'static str {
         match self {
-            RangeSpec::Today => "current day",
-            RangeSpec::CurrentWeek => "current week",
-            RangeSpec::CurrentMonth => "current month",
+            RangeSpec::Today => "giorno corrente",
+            RangeSpec::CurrentWeek => "settimana corrente",
+            RangeSpec::CurrentMonth => "mese corrente",
         }
     }
 }
 
-/// A concrete period, with absolute endpoints. Half-open: `[start, end)`.
+/// Un periodo concreto, con estremi assoluti. Semiaperto: `[start, end)`.
 ///
-/// Half-open and not closed because otherwise the midnight instant
-/// would belong to two days and be counted twice.
+/// Semiaperto e non chiuso perche' altrimenti l'istante di mezzanotte
+/// apparterrebbe a due giorni e verrebbe contato due volte.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TimeRange {
     pub start: DateTime<Utc>,
@@ -44,8 +44,8 @@ fn local_midnight_to_utc(date: NaiveDate) -> DateTime<Utc> {
     let naive = date.and_hms_opt(0, 0, 0).unwrap();
     COMPANY_TZ
         .from_local_datetime(&naive)
-        .single()  // midnight is unambiguous in Europe/Rome
-        .expect("local midnight always exists in Europe/Rome")
+        .single()  // la mezzanotte e' univoca in Europe/Rome
+        .expect("la mezzanotte locale esiste sempre in Europe/Rome")
         .with_timezone(&Utc)
 }
 
@@ -54,11 +54,11 @@ impl TimeRange {
         Self { start, end }
     }
 
-    /// Resolves a `RangeSpec` into a concrete period, relative to a reference instant.
+    /// Risolve una `RangeSpec` in un periodo concreto, rispetto a un istante di riferimento.
     ///
-    /// `now` is a parameter, not `Utc::now()`: it is what makes it possible to test
-    /// the behavior across midnight, month-end and the daylight-saving switch
-    /// without waiting for them to happen.
+    /// `now` e' un parametro, non `Utc::now()`: e' cio' che permette di testare il
+    /// comportamento a cavallo di mezzanotte, di fine mese e del cambio di ora legale
+    /// senza aspettare che accadano.
     pub fn resolve(spec: RangeSpec, now: DateTime<Utc>) -> TimeRange {
         match spec {
             RangeSpec::Today => {
@@ -102,7 +102,7 @@ impl TimeRange {
 mod tests {
     use super::*;
 
-    /// Builds a UTC instant from a wall-clock time in the company zone.
+    /// helper per il funzionamento dei test
     fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
         COMPANY_TZ
             .with_ymd_and_hms(y, mo, d, h, mi, s)
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_today_boundaries() {
-        // Thursday, an ordinary 24-hour day.
+        // Giovedi', un giorno ordinario da 24 ore.
         let now = local(2026, 8, 20, 15, 30, 0);
         let r = TimeRange::resolve(RangeSpec::Today, now);
         assert_eq!(r.start, local(2026, 8, 20, 0, 0, 0));
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_current_week_starts_monday() {
-        // Thursday 2026-08-20 -> [Mon 17, next Mon 24).
+        // Giovedi' 2026-08-20 -> [lun 17, lun successivo 24).
         let now = local(2026, 8, 20, 9, 0, 0);
         let r = TimeRange::resolve(RangeSpec::CurrentWeek, now);
         assert_eq!(r.start, local(2026, 8, 17, 0, 0, 0));
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_current_month_december_rollover() {
-        // Why checked_add_months: December must roll into next January.
+        // Perche' checked_add_months: dicembre deve passare a gennaio dell'anno dopo.
         let now = local(2026, 12, 15, 9, 0, 0);
         let r = TimeRange::resolve(RangeSpec::CurrentMonth, now);
         assert_eq!(r.start, local(2026, 12, 1, 0, 0, 0));
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_today_dst_spring_forward_is_23h() {
-        // Last Sunday of March 2026: clocks jump 02:00 -> 03:00, the day is 23h.
+        // Ultima domenica di marzo 2026: l'orologio salta 02:00 -> 03:00, il giorno e' 23h.
         let now = local(2026, 3, 29, 12, 0, 0);
         let r = TimeRange::resolve(RangeSpec::Today, now);
         assert_eq!(r.duration(), Duration::hours(23));
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_today_dst_fall_back_is_25h() {
-        // Last Sunday of October 2026: clocks fall 03:00 -> 02:00, the day is 25h.
+        // Ultima domenica di ottobre 2026: l'orologio torna 03:00 -> 02:00, il giorno e' 25h.
         let now = local(2026, 10, 25, 12, 0, 0);
         let r = TimeRange::resolve(RangeSpec::Today, now);
         assert_eq!(r.duration(), Duration::hours(25));

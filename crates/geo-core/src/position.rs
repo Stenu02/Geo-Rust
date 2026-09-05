@@ -1,11 +1,10 @@
-//! Geographic coordinates and shared vocabulary.
+//! Coordinate geografiche e vocabolario condiviso.
 
 use crate::COORD_EPSILON_DEG;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// User identifier. A newtype instead of a bare `i64`: it prevents accidentally
-/// passing a message id where a user id is expected.
+/// Identificatore di un utente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UserId(pub i64);
 
@@ -15,14 +14,14 @@ impl std::fmt::Display for UserId {
     }
 }
 
-/// User role (R12).
+/// Ruolo dell'utente (R12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     Trucker,
     Admin,
 }
 
-/// A geographic coordinate in decimal degrees.
+/// Una coordinata geografica in gradi decimali.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Position {
     pub lat: f64,
@@ -34,18 +33,19 @@ impl Position {
         Self { lat, lon }
     }
 
-    /// True if the two coordinates should be considered DIFFERENT (R6).
+    /// Vero se le due coordinate vanno considerate DIVERSE (R6).
     ///
-    /// Do not use `==`: see COORD_EPSILON_DEG.
+    /// Non usare `==`: vedi COORD_EPSILON_DEG.
     pub fn differs_from(&self, other: &Position) -> bool {
         (self.lat - other.lat).abs() > COORD_EPSILON_DEG
             || (self.lon - other.lon).abs() > COORD_EPSILON_DEG
     }
 
-    /// Validation: latitude in [-90, 90], longitude in [-180, 180].
+    /// Validazione: latitudine in [-90, 90], longitudine in [-180, 180].
     pub fn is_valid(&self) -> bool {
         if self.lat < -90.0 || self.lon < -180.0
-        || self.lat > 90.0 || self.lon > 180.0{
+        || self.lat > 90.0 || self.lon > 180.0
+        || self.lat.is_nan() || self.lon.is_nan() {
             false
         } else {
             true
@@ -54,7 +54,7 @@ impl Position {
     }
 }
 
-/// A value together with the instant it refers to.
+/// Un valore con l'istante a cui si riferisce.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Timestamped<T> {
     pub at: DateTime<Utc>,
@@ -67,7 +67,7 @@ impl<T> Timestamped<T> {
     }
 }
 
-/// Convenience alias: a position with its instant.
+/// Alias di comodo: una posizione con il suo istante.
 pub type FixedPosition = Timestamped<Position>;
 
 #[cfg(test)]
@@ -81,25 +81,27 @@ mod tests {
 
     #[test]
     fn test_is_valid_accepts_boundaries() {
-        // The range is inclusive at both ends.
+        // Il range e' inclusivo a entrambi gli estremi.
         assert!(Position::new(90.0, 180.0).is_valid());
         assert!(Position::new(-90.0, -180.0).is_valid());
     }
 
     #[test]
     fn test_is_valid_rejects_out_of_range() {
-        assert!(!Position::new(90.1, 0.0).is_valid()); // latitude too high
-        assert!(!Position::new(-90.1, 0.0).is_valid()); // latitude too low
-        assert!(!Position::new(0.0, 180.1).is_valid()); // longitude too high
-        assert!(!Position::new(0.0, -180.1).is_valid()); // longitude too low
+        assert!(!Position::new(90.1, 0.0).is_valid()); // latitudine troppo alta
+        assert!(!Position::new(-90.1, 0.0).is_valid()); // latitudine troppo bassa
+        assert!(!Position::new(0.0, 180.1).is_valid()); // longitudine troppo alta
+        assert!(!Position::new(0.0, -180.1).is_valid()); // longitudine troppo bassa
+        assert!(!Position::new(f64::NAN, 7.0).is_valid()); //latitudine non valida
+        assert!(!Position::new(45.0, f64::NAN).is_valid()); //longitudine non valida
     }
 
     #[test]
     fn test_differs_from_uses_epsilon() {
         let p = Position::new(45.0, 7.0);
-        // A change below epsilon (~11 cm) is not a difference (R6).
+        // Un cambiamento sotto l'epsilon (~11 cm) non e' una differenza (R6).
         assert!(!p.differs_from(&Position::new(45.0 + 1e-9, 7.0)));
-        // A clearly larger change is.
+        // Uno chiaramente piu' grande si'.
         assert!(p.differs_from(&Position::new(45.001, 7.0)));
     }
 }

@@ -1,17 +1,12 @@
-//! User state machine (R5, R6, R7).
+//! Macchina a stati dell'utente (R5, R6, R7).
 //!
 //! ```text
-//! DISCONNECTED --login--> STOPPED --coordinate change--> MOVING
-//!      ^                    ^                               |
-//!      |                    +---- 3 min without change ------+
-//!      |
-//!      +---- disconnect (from any state)
+//! SCONNESSO --login--> FERMO --cambio coordinata--> IN MOVIMENTO
+//!     ^                  ^                                |
+//!     |                  +---- 3 min senza cambiare -------+
+//!     |
+//!     +---- disconnessione (da qualsiasi stato)
 //! ```
-//!
-//! CAREFUL WITH THE R7 IMPLEMENTATION: the transition to STOPPED must be based on a
-//! TIMER (instant of the last actual change), not on counting samples.
-//! If the client stops transmitting, the 6 samples never arrive and with the
-//! counter approach it would NEVER transition to STOPPED.
 
 use crate::position::Position;
 use chrono::{DateTime, Utc};
@@ -20,22 +15,21 @@ use crate::{stop_threshold};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UserState {
-    /// Not connected.
+    /// Non connesso.
     Disconnected,
-    /// Connected, coordinates unchanged.
+    /// Connesso, coordinate ferme.
     Stopped,
-    /// Connected, coordinates changing.
+    /// Connesso, coordinate in variazione.
     Moving,
 }
 
 impl UserState {
-    /// True only for `Stopped`. Used by the analytics for the "pause duration" (R10).
-    ///
+    /// Vero solo per `Stopped`. Usato dalle analisi per la "durata delle pause" (R10).
     pub fn counts_as_pause(&self) -> bool {
         matches!(self, UserState::Stopped)
     }
 
-    /// The lowercase token stored in the `state` column of `state_intervals`.
+    /// Il campo salvato nella colonna `state` di `state_intervals` a db.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             UserState::Disconnected => "disconnected",
@@ -44,8 +38,8 @@ impl UserState {
         }
     }
 
-    /// Parses the token written by `as_db_str`; `None` for anything else
-    /// (a corrupt DB row must not panic).
+    /// Interpreta il token scritto da `as_db_str`; `None` per qualsiasi altra cosa
+    /// (una riga corrotta del DB non deve generare panic).
     pub fn from_db_str(s: &str) -> Option<Self> {
         match s {
             "disconnected" => Some(UserState::Disconnected),
@@ -56,7 +50,7 @@ impl UserState {
     }
 }
 
-/// A state change that happened at a given instant.
+/// Rappresenta un cambio di stato avvenuto a un certo istante.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Transition {
     pub from: UserState,
@@ -64,17 +58,18 @@ pub struct Transition {
     pub at: DateTime<Utc>,
 }
 
-/// State of a single user. One instance per connected user, held by the server.
+/// Rappresenta lo stato di un singolo utente. 
+/// Viene creata una istanza per utente connesso, tenuta dal server.
 #[derive(Debug, Clone)]
 pub struct StateMachine {
     state: UserState,
     last_position: Option<Position>,
-    /// Instant of the last ACTUAL coordinate change.
+    /// Istante dell'ultimo cambiamento EFFETTIVO di coordinata.
     last_change_at: Option<DateTime<Utc>>,
 }
 
 impl StateMachine {
-    /// Builds a machine in the DISCONNECTED state.
+    /// Alla creazione la macchina è nello stato SCONNESSO.
     pub fn new() -> Self {
         Self {
             state: UserState::Disconnected,
@@ -91,22 +86,23 @@ impl StateMachine {
         self.last_position
     }
 
-    /// Sets the new state and returns the corresponding transition.
+    /// Imposta il nuovo stato e restituisce la transizione corrispondente.
     ///
-    /// The four `on_*` methods use this so they only carry the DECISION
-    /// (which state to move to, and at which instant), never the field bookkeeping.
-    /// `at` is passed explicitly because it is not always `now`: `on_tick` closes
-    /// the movement at `last_change_at + threshold` (R7).
+    /// Si occupa di centralizzare la manutenzione dei campi in caso di cambio di stato.
+    /// Vien usato nei quattro metodi `on_*`, i quali passano due parametri:
+    /// (lo stato in cui passare, l'istante in cui si verifica il cambiamento)
+    /// Il parametro `at` è passato esplicitamente perche' non è sempre `now`: `on_tick` chiude
+    /// il movimento a `last_change_at + soglia` (R7).
     fn transition_to(&mut self, to: UserState, at: DateTime<Utc>) -> Transition {
         let from = self.state;
         self.state = to;
         Transition { from, to, at }
     }
 
-    /// Login: DISCONNECTED -> STOPPED.
+    /// Login: SCONNESSO -> FERMO.
     ///
-    /// The initial state is STOPPED, not MOVING: it switches to MOVING only
-    /// on the first actual coordinate change.
+    /// Lo stato iniziale e' FERMO, non IN MOVIMENTO: si passa a IN MOVIMENTO solo
+    /// al primo cambio effettivo di coordinata.
     pub fn on_login(&mut self, now: DateTime<Utc>) -> Option<Transition> {
         if self.state != UserState::Disconnected {
             return None;
@@ -116,13 +112,13 @@ impl StateMachine {
         Some(self.transition_to(UserState::Stopped, now))
     }
 
-    /// Position received from the client (R4).
+    /// Posizione ricevuta dal client (R4).
     ///
-    /// Cases to handle:
-    /// - FIRST position after login: it is not a "change", it does not trigger R6
-    /// - coordinate different from the previous one: STOPPED -> MOVING, and in any
-    ///   case updates `last_change_at`
-    /// - same coordinate: no transition here (`on_tick` takes care of it)
+    /// Casi da gestire:
+    /// - PRIMA posizione dopo il login: non è un "cambio", non fa scattare R6
+    /// - coordinata diversa dalla precedente: FERMO -> IN MOVIMENTO, e in ogni caso
+    ///   aggiorna `last_change_at`
+    /// - coordinata uguale: nessuna transizione qui (il compito è delegato a `on_tick`)
     pub fn on_position(
         &mut self,
         now: DateTime<Utc>,
@@ -156,14 +152,14 @@ impl StateMachine {
         }
     }
 
-    /// Periodic evaluation (R7). Called by the server at regular intervals.
+    /// Valutazione periodica (R7). Chiamata dal server a intervalli regolari.
     ///
-    /// If the state is MOVING and at least `STOP_THRESHOLD_SECS` have passed
-    /// since the last coordinate change, it transitions to STOPPED.
+    /// Se lo stato e' IN MOVIMENTO e sono passati almeno `STOP_THRESHOLD_SECS`
+    /// dall'ultimo cambio di coordinata, transita a FERMO.
     ///
-    /// The transition instant MUST be `last_change_at + threshold`, not `now`:
-    /// otherwise the movement duration comes out longer than it should by however
-    /// fine the tick is, and the R10 totals do not add up.
+    /// L'istante della transizione DEVE essere `last_change_at + soglia`, non `now`:
+    /// altrimenti la durata del movimento risulta piu' lunga del dovuto di quanto è
+    /// fine il tick, e i totali di R10 non tornano.
     pub fn on_tick(&mut self, now: DateTime<Utc>) -> Option<Transition> {
         if self.state != UserState::Moving {
             return None;
@@ -177,9 +173,9 @@ impl StateMachine {
         None
     }
 
-    /// Disconnect from any state.
+    /// Disconnessione da qualsiasi stato.
     ///
-    /// On reconnect the 3-minute timer restarts: a choice to document in the report.
+    /// Alla riconnessione il timer dei 3 minuti riparte.
     pub fn on_disconnect(&mut self, now: DateTime<Utc>) -> Option<Transition> {
         if self.state == UserState::Disconnected {
             return None
@@ -201,9 +197,8 @@ mod tests {
     use super::*;
     use crate::stop_threshold;
     use chrono::{Duration, TimeZone};
-
-    /// A fixed base instant plus an offset in seconds. Time is built by hand:
-    /// no `Utc::now()`, so a full trip is replayed deterministically.
+    
+    
     fn t(offset_secs: i64) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 20, 12, 0, 0).unwrap() + Duration::seconds(offset_secs)
     }
@@ -223,23 +218,23 @@ mod tests {
         let mut sm = StateMachine::new();
         assert_eq!(sm.state(), UserState::Disconnected);
 
-        // login: DISCONNECTED -> STOPPED
+        // login: SCONNESSO -> FERMO
         let tr = sm.on_login(t(0)).unwrap();
         assert_eq!((tr.from, tr.to), (UserState::Disconnected, UserState::Stopped));
 
-        // first fix: not a change, stays STOPPED
+        // primo fix: non e' un cambio, resta FERMO
         assert!(sm.on_position(t(30), Position::new(45.0, 7.0)).is_none());
         assert_eq!(sm.state(), UserState::Stopped);
 
-        // coordinate change: STOPPED -> MOVING
+        // cambio coordinata: FERMO -> IN MOVIMENTO
         let tr = sm.on_position(t(60), Position::new(45.001, 7.0)).unwrap();
         assert_eq!((tr.from, tr.to), (UserState::Stopped, UserState::Moving));
 
-        // 3 min without change: MOVING -> STOPPED
+        // 3 min senza cambiare: IN MOVIMENTO -> FERMO
         let tr = sm.on_tick(t(60) + stop_threshold() + Duration::seconds(5)).unwrap();
         assert_eq!((tr.from, tr.to), (UserState::Moving, UserState::Stopped));
 
-        // disconnect: STOPPED -> DISCONNECTED, keeping the real `from`
+        // disconnessione: FERMO -> SCONNESSO, mantenendo il `from` reale
         let tr = sm.on_disconnect(t(400)).unwrap();
         assert_eq!((tr.from, tr.to), (UserState::Stopped, UserState::Disconnected));
         assert_eq!(sm.state(), UserState::Disconnected);
@@ -250,15 +245,15 @@ mod tests {
         let mut sm = StateMachine::new();
         sm.on_login(t(0));
 
-        // R6: the first position after login is not a "change"
+        // R6: la prima posizione dopo il login non e' un "cambio"
         assert!(sm.on_position(t(30), Position::new(45.0, 7.0)).is_none());
         assert_eq!(sm.state(), UserState::Stopped);
 
-        // same coordinate again: still no movement
+        // stessa coordinata di nuovo: ancora nessun movimento
         assert!(sm.on_position(t(60), Position::new(45.0, 7.0)).is_none());
         assert_eq!(sm.state(), UserState::Stopped);
 
-        // first actual change: now it moves
+        // primo cambio effettivo: ora si muove
         let tr = sm.on_position(t(90), Position::new(45.002, 7.0)).unwrap();
         assert_eq!(tr.to, UserState::Moving);
     }
@@ -267,39 +262,39 @@ mod tests {
     fn test_three_minutes_triggers_stopped() {
         let mut sm = StateMachine::new();
         sm.on_login(t(0));
-        sm.on_position(t(30), Position::new(45.0, 7.0)); // first fix
-        sm.on_position(t(60), Position::new(45.001, 7.0)); // -> MOVING, last change at t(60)
+        sm.on_position(t(30), Position::new(45.0, 7.0)); // primo fix
+        sm.on_position(t(60), Position::new(45.001, 7.0)); // -> IN MOVIMENTO, ultimo cambio a t(60)
 
-        // one second before the threshold: no transition
+        // un secondo prima della soglia: nessuna transizione
         assert!(sm
             .on_tick(t(60) + stop_threshold() - Duration::seconds(1))
             .is_none());
         assert_eq!(sm.state(), UserState::Moving);
 
-        // exactly at the threshold: transition to STOPPED
+        // esattamente alla soglia: transizione a FERMO
         let tr = sm.on_tick(t(60) + stop_threshold()).unwrap();
         assert_eq!(tr.to, UserState::Stopped);
-        // the instant is last_change_at + threshold, NOT `now` (R7)
+        // l'istante e' last_change_at + soglia, NON `now` (R7)
         assert_eq!(tr.at, t(60) + stop_threshold());
     }
 
     #[test]
     fn test_continued_movement_delays_stop() {
-        // Guards the R7 timer refresh: while MOVING, each real change restarts the clock.
+        // Protegge il refresh del timer di R7: in MOVIMENTO ogni cambio reale riavvia il conteggio.
         let mut sm = StateMachine::new();
         sm.on_login(t(0));
-        sm.on_position(t(30), Position::new(45.0, 7.0)); // first fix
-        sm.on_position(t(60), Position::new(45.001, 7.0)); // -> MOVING, last change at t(60)
+        sm.on_position(t(30), Position::new(45.0, 7.0)); // primo fix
+        sm.on_position(t(60), Position::new(45.001, 7.0)); // -> IN MOVIMENTO, ultimo cambio a t(60)
 
-        // still moving at t(120): refreshes the timer, no transition
+        // ancora in movimento a t(120): rinfresca il timer, nessuna transizione
         assert!(sm.on_position(t(120), Position::new(45.002, 7.0)).is_none());
         assert_eq!(sm.state(), UserState::Moving);
 
-        // 3 min after the FIRST change but only 2 min after the last: still MOVING
+        // 3 min dopo il PRIMO cambio ma solo 2 dopo l'ultimo: ancora IN MOVIMENTO
         assert!(sm.on_tick(t(60) + stop_threshold()).is_none());
         assert_eq!(sm.state(), UserState::Moving);
 
-        // 3 min after the LAST change: now it stops, at last_change_at + threshold
+        // 3 min dopo l'ULTIMO cambio: ora si ferma, a last_change_at + soglia
         let tr = sm.on_tick(t(120) + stop_threshold()).unwrap();
         assert_eq!(tr.to, UserState::Stopped);
         assert_eq!(tr.at, t(120) + stop_threshold());
