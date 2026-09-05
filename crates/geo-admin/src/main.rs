@@ -98,13 +98,24 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(panic_info);
+    }));
+
     let mut ui = AdminUi::new(command_tx, event_rx);
-    ui.run(&mut terminal)?;
+    let res = ui.run(&mut terminal);
 
     // Ripristino del terminale
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+
+    let _ = std::panic::take_hook();
+
+    res?;
 
     Ok(())
 }
