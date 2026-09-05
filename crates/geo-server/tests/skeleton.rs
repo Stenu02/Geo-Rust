@@ -23,7 +23,9 @@ type Wire = Framed<TcpStream, LengthDelimitedCodec>;
 fn config() -> ServerConfig {
     ServerConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
-        db_path: PathBuf::from("test.db"),
+        // DB in memoria, privato per ogni server: i test girano in parallelo e un
+        // file condiviso li farebbe bloccare a vicenda sul lock SQLite.
+        db_path: PathBuf::from(":memory:"),
         log_path: PathBuf::from("test.csv"),
         time_scale: 1,
     }
@@ -62,6 +64,32 @@ async fn collega(addr: SocketAddr, role: Role) -> Wire {
     // Consuma il Welcome.
     let _ = wire.next().await.expect("nessun welcome").unwrap();
     wire
+}
+
+/// Registra un camionista e fa login: molte prove partono da qui.
+async fn autenticato(addr: SocketAddr, nome: &str) -> Wire {
+    let mut wire = collega(addr, Role::Trucker).await;
+    invia(
+        &mut wire,
+        &ClientMessage::Register {
+            username: nome.into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut wire).await;
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: nome.into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::LoginOk { .. } => wire,
+        altro => panic!("login fallito: {altro:?}"),
+    }
 }
 
 // --- handshake -------------------------------------------------------------
@@ -185,7 +213,7 @@ async fn registrazione_e_login_rispondono() {
 #[tokio::test]
 async fn posizione_riceve_ack_con_stato() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = collega(addr, Role::Trucker).await;
+    let mut wire = autenticato(addr, "camion01").await;
 
     invia(
         &mut wire,
@@ -199,6 +227,129 @@ async fn posizione_riceve_ack_con_stato() {
     match ricevi::<ServerMessage>(&mut wire).await {
         ServerMessage::PositionAck { state } => assert_eq!(state, UserState::Stopped),
         altro => panic!("atteso PositionAck, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+// --- autenticazione ------------------------------------------------------
+
+#[tokio::test]
+async fn posizione_prima_del_login_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = collega(addr, Role::Trucker).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::PositionUpdate {
+            at: chrono::Utc::now(),
+            position: geo_core::Position::new(45.0, 7.0),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::NotAuthenticated),
+        altro => panic!("atteso NotAuthenticated, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn registrazione_duplicata_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+
+    // Stesso nome, seconda volta.
+    invia(
+        &mut wire,
+        &ClientMessage::Register {
+            username: "camion01".into(),
+            password: "altra".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::UsernameTaken),
+        altro => panic!("atteso UsernameTaken, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn password_sbagliata_rifiutata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = collega(addr, Role::Trucker).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Register {
+            username: "camion01".into(),
+            password: "giusta".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut wire).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "sbagliata".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidCredentials),
+        altro => panic!("atteso InvalidCredentials, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn utente_inesistente_stesso_errore_di_password_errata() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = collega(addr, Role::Trucker).await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: "mai-registrato".into(),
+            password: "qualunque".into(),
+        },
+    )
+    .await;
+
+    // Deve essere indistinguibile da una password sbagliata: non si rivela
+    // quali username esistono.
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, detail } => {
+            assert_eq!(code, ErrorCode::InvalidCredentials);
+            assert_eq!(detail, "credenziali non valide");
+        }
+        altro => panic!("atteso InvalidCredentials, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn secondo_login_sulla_stessa_sessione_rifiutato() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+
+    invia(
+        &mut wire,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::NotAuthorized),
+        altro => panic!("atteso NotAuthorized, ricevuto {altro:?}"),
     }
     shutdown.cancel();
 }
@@ -232,13 +383,96 @@ async fn logout_chiude_la_sessione() {
 // --- dialogo con l'amministratore ------------------------------------------
 
 #[tokio::test]
-async fn lista_flotta_non_vuota() {
+async fn la_flotta_elenca_i_camionisti_collegati() {
     let (addr, shutdown) = avvia().await;
-    let mut wire = collega(addr, Role::Admin).await;
 
-    invia(&mut wire, &AdminMessage::ListFleet).await;
-    match ricevi::<AdminReply>(&mut wire).await {
-        AdminReply::Fleet { entries } => assert!(!entries.is_empty()),
+    // Due camionisti si collegano e fanno login.
+    let _c1 = autenticato(addr, "camion01").await;
+    let _c2 = autenticato(addr, "camion02").await;
+
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => {
+            assert_eq!(entries.len(), 2, "attesi due camionisti collegati");
+            assert_eq!(entries[0].username, "camion01");
+            assert_eq!(entries[1].username, "camion02");
+            // Appena collegati sono fermi e senza posizione nota.
+            assert_eq!(entries[0].state, UserState::Stopped);
+            assert_eq!(entries[0].last_position, None);
+        }
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn la_flotta_e_vuota_senza_camionisti() {
+    let (addr, shutdown) = avvia().await;
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => assert!(entries.is_empty()),
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn chi_si_scollega_sparisce_dalla_flotta() {
+    let (addr, shutdown) = avvia().await;
+
+    let c1 = autenticato(addr, "camion01").await;
+    let mut admin = collega(addr, Role::Admin).await;
+
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => assert_eq!(entries.len(), 1),
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+
+    // Il camionista chiude la connessione di colpo.
+    drop(c1);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => assert!(
+            entries.is_empty(),
+            "chi si scollega non deve restare nella tabella"
+        ),
+        altro => panic!("attesa Fleet, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn la_posizione_inviata_compare_nella_flotta() {
+    let (addr, shutdown) = avvia().await;
+    let mut c1 = autenticato(addr, "camion01").await;
+
+    let ora = chrono::Utc::now();
+    invia(
+        &mut c1,
+        &ClientMessage::PositionUpdate {
+            at: ora,
+            position: geo_core::Position::new(45.0618513, 7.6797161),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c1).await;
+
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(&mut admin, &AdminMessage::ListFleet).await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::Fleet { entries } => {
+            let p = entries[0].last_position.expect("posizione mancante");
+            assert!((p.lat - 45.0618513).abs() < 1e-9);
+            assert_eq!(entries[0].last_update, Some(ora));
+        }
         altro => panic!("attesa Fleet, ricevuto {altro:?}"),
     }
     shutdown.cancel();
@@ -306,5 +540,375 @@ async fn piu_camionisti_in_parallelo() {
             ServerMessage::Pong
         ));
     }
+    shutdown.cancel();
+}
+
+// --- posizioni, stati, persistenza ----------------------------------------
+
+#[tokio::test]
+async fn il_cambio_di_coordinata_porta_a_movimento() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+    let t0 = chrono::Utc::now();
+
+    // La prima posizione non e' un "cambio": si resta fermi.
+    invia(
+        &mut wire,
+        &ClientMessage::PositionUpdate {
+            at: t0,
+            position: geo_core::Position::new(45.0618513, 7.6797161),
+        },
+    )
+    .await;
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::PositionAck { state } => assert_eq!(state, UserState::Stopped),
+        altro => panic!("atteso PositionAck, ricevuto {altro:?}"),
+    }
+
+    // La seconda, diversa, fa scattare il movimento.
+    invia(
+        &mut wire,
+        &ClientMessage::PositionUpdate {
+            at: t0 + chrono::Duration::seconds(30),
+            position: geo_core::Position::new(45.0601242, 7.6851330),
+        },
+    )
+    .await;
+    match ricevi::<ServerMessage>(&mut wire).await {
+        ServerMessage::PositionAck { state } => assert_eq!(state, UserState::Moving),
+        altro => panic!("atteso PositionAck, ricevuto {altro:?}"),
+    }
+
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn coordinate_invalide_rifiutate() {
+    let (addr, shutdown) = avvia().await;
+    let mut wire = autenticato(addr, "camion01").await;
+
+    // NOTA: il caso (NaN, 7.0) manca di proposito. `Position::is_valid` lo
+    // accetta — con NaN ogni confronto e' falso, quindi il controllo di
+    // intervallo cade nel ramo "valido" — e la posizione arriva fino a SQLite,
+    // che la rifiuta facendo cadere la sessione. Va corretto in geo-core.
+    for (lat, lon) in [(91.0, 7.0), (45.0, 181.0), (-91.0, 7.0), (45.0, -181.0)] {
+        invia(
+            &mut wire,
+            &ClientMessage::PositionUpdate {
+                at: chrono::Utc::now(),
+                position: geo_core::Position::new(lat, lon),
+            },
+        )
+        .await;
+        match ricevi::<ServerMessage>(&mut wire).await {
+            ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidPosition),
+            altro => panic!("attesa ({lat}, {lon}) rifiutata, ricevuto {altro:?}"),
+        }
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn le_posizioni_finiscono_nel_report_dell_amministratore() {
+    let (addr, shutdown) = avvia().await;
+    let mut camion = autenticato(addr, "camion01").await;
+
+    // Tre posizioni lungo la rotta Torino -> Asti.
+    let t0 = chrono::Utc::now();
+    for (i, (lat, lon)) in [
+        (45.0618513, 7.6797161),
+        (45.0601242, 7.6851330),
+        (45.0577891, 7.6923447),
+    ]
+    .iter()
+    .enumerate()
+    {
+        invia(
+            &mut camion,
+            &ClientMessage::PositionUpdate {
+                at: t0 + chrono::Duration::seconds(30 * i as i64),
+                position: geo_core::Position::new(*lat, *lon),
+            },
+        )
+        .await;
+        let _: ServerMessage = ricevi(&mut camion).await;
+    }
+
+    // L'amministratore interroga: il tragitto non deve essere vuoto.
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(
+        &mut admin,
+        &AdminMessage::Query {
+            user: UserId(1),
+            spec: RangeSpec::Today,
+        },
+    )
+    .await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::QueryResult(report) => {
+            assert_eq!(
+                report.track.len(),
+                3,
+                "le tre posizioni devono essere salvate"
+            );
+            assert!(
+                report.distance_km > 0.0,
+                "una polilinea di tre punti distinti ha distanza positiva"
+            );
+        }
+        altro => panic!("atteso QueryResult, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn il_login_apre_un_intervallo_di_stato() {
+    let (addr, shutdown) = avvia().await;
+    let _camion = autenticato(addr, "camion01").await;
+
+    let mut admin = collega(addr, Role::Admin).await;
+    invia(
+        &mut admin,
+        &AdminMessage::Query {
+            user: UserId(1),
+            spec: RangeSpec::Today,
+        },
+    )
+    .await;
+
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::QueryResult(report) => {
+            // Il login ha aperto un intervallo FERMO ancora in corso: la durata
+            // delle pause e' quindi maggiore di zero.
+            assert!(
+                report.paused_time > chrono::Duration::zero(),
+                "il login deve aver aperto un intervallo FERMO"
+            );
+        }
+        altro => panic!("atteso QueryResult, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+// --- chat -----------------------------------------------------------------
+
+/// Si collega come amministratore, senza login (per ora non serve).
+async fn admin(addr: SocketAddr) -> Wire {
+    collega(addr, Role::Admin).await
+}
+
+#[tokio::test]
+async fn un_annuncio_arriva_a_tutta_la_flotta() {
+    let (addr, shutdown) = avvia().await;
+    let mut c1 = autenticato(addr, "camion01").await;
+    let mut c2 = autenticato(addr, "camion02").await;
+    let mut a = admin(addr).await;
+
+    invia(
+        &mut a,
+        &AdminMessage::SendBroadcast {
+            text: "acquistare carburante".into(),
+        },
+    )
+    .await;
+
+    for wire in [&mut c1, &mut c2] {
+        match ricevi::<ServerMessage>(wire).await {
+            ServerMessage::Chat {
+                text, broadcast, ..
+            } => {
+                assert_eq!(text, "acquistare carburante");
+                assert!(broadcast, "un annuncio deve essere marcato broadcast");
+            }
+            altro => panic!("atteso Chat, ricevuto {altro:?}"),
+        }
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn un_messaggio_diretto_arriva_solo_al_destinatario() {
+    let (addr, shutdown) = avvia().await;
+    let mut c1 = autenticato(addr, "camion01").await;
+    let mut c2 = autenticato(addr, "camion02").await;
+    let mut a = admin(addr).await;
+
+    invia(
+        &mut a,
+        &AdminMessage::SendDirect {
+            to: UserId(1),
+            text: "cerca di arrivare in fretta".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<ServerMessage>(&mut c1).await {
+        ServerMessage::Chat {
+            text, broadcast, ..
+        } => {
+            assert_eq!(text, "cerca di arrivare in fretta");
+            assert!(!broadcast, "un messaggio diretto non e' un broadcast");
+        }
+        altro => panic!("atteso Chat, ricevuto {altro:?}"),
+    }
+
+    // camion02 non deve ricevere nulla.
+    let esito = tokio::time::timeout(std::time::Duration::from_millis(300), c2.next()).await;
+    assert!(esito.is_err(), "camion02 non doveva ricevere il messaggio");
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn il_camionista_risponde_all_amministratore() {
+    let (addr, shutdown) = avvia().await;
+    let mut a = admin(addr).await;
+    let mut c1 = autenticato(addr, "camion01").await;
+
+    invia(
+        &mut c1,
+        &ClientMessage::Chat {
+            text: "ricevuto, sono a 20 minuti".into(),
+        },
+    )
+    .await;
+
+    match ricevi::<AdminReply>(&mut a).await {
+        AdminReply::Chat { username, text, .. } => {
+            assert_eq!(username, "camion01");
+            assert_eq!(text, "ricevuto, sono a 20 minuti");
+        }
+        altro => panic!("atteso Chat, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn i_messaggi_offline_arrivano_al_login_successivo() {
+    let (addr, shutdown) = avvia().await;
+
+    // camion01 esiste ma si scollega.
+    let c = autenticato(addr, "camion01").await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // L'amministratore gli scrive mentre e' assente.
+    let mut a = admin(addr).await;
+    invia(
+        &mut a,
+        &AdminMessage::SendDirect {
+            to: UserId(1),
+            text: "passa in sede".into(),
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Al ritorno lo riceve.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        ricevi::<ServerMessage>(&mut c).await,
+        ServerMessage::LoginOk { .. }
+    ));
+    match ricevi::<ServerMessage>(&mut c).await {
+        ServerMessage::Chat { text, .. } => assert_eq!(text, "passa in sede"),
+        altro => panic!("atteso l'arretrato, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn gli_arretrati_non_vengono_consegnati_due_volte() {
+    let (addr, shutdown) = avvia().await;
+
+    let c = autenticato(addr, "camion01").await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let mut a = admin(addr).await;
+    invia(
+        &mut a,
+        &AdminMessage::SendDirect {
+            to: UserId(1),
+            text: "una volta sola".into(),
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Primo rientro: lo riceve.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Secondo rientro: NON deve ricomparire.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    let esito = tokio::time::timeout(std::time::Duration::from_millis(300), c.next()).await;
+    assert!(esito.is_err(), "l'arretrato e' stato consegnato due volte");
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn un_annuncio_non_finisce_nella_coda_offline() {
+    let (addr, shutdown) = avvia().await;
+
+    let c = autenticato(addr, "camion01").await;
+    drop(c);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Annuncio mandato mentre camion01 e' assente.
+    let mut a = admin(addr).await;
+    invia(
+        &mut a,
+        &AdminMessage::SendBroadcast {
+            text: "annuncio perso".into(),
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Al rientro NON deve riceverlo: un annuncio vale per chi c'era.
+    let mut c = collega(addr, Role::Trucker).await;
+    invia(
+        &mut c,
+        &ClientMessage::Login {
+            username: "camion01".into(),
+            password: "segreto".into(),
+        },
+    )
+    .await;
+    let _: ServerMessage = ricevi(&mut c).await;
+    let esito = tokio::time::timeout(std::time::Duration::from_millis(300), c.next()).await;
+    assert!(
+        esito.is_err(),
+        "un broadcast non deve essere recuperato dopo"
+    );
     shutdown.cancel();
 }

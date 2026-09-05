@@ -1,3 +1,9 @@
+//! Punto di ingresso dell'applicazione `geo-admin`.
+//!
+//! Effettua il parsing degli argomenti da riga di comando, gestisce il processo
+//! di login, e fa partire in background la connessione di rete e in foreground 
+//! l'interfaccia utente (TUI).
+
 use clap::Parser;
 use geo_admin::ui::AdminUi;
 use std::io::{self, Write};
@@ -7,6 +13,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
+/// Argomenti da riga di comando per la console dell'amministratore.
 #[derive(Parser)]
 #[command(name = "geo-admin", about = "Console amministratore GeoRuggine")]
 struct Args {
@@ -37,8 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let mut current_user = args.username;
     let mut current_pass = args.password;
 
-    // 2. Sistema di Login (tentativi illimitati)
-    loop {
+    let framed = loop {
         let user = match &current_user {
             Some(u) => u.clone(),
             None => {
@@ -55,41 +61,75 @@ async fn main() -> anyhow::Result<()> {
             None => {
                 print!("Password: ");
                 io::stdout().flush()?;
-                let mut input = String::new();
-                io::stdin().read_line(&mut input)?;
-                input.trim().to_string()
+                rpassword::read_password()?
             }
         };
 
-        if user == "admin" && pass == "123" {
-            println!("Login concesso. Avvio interfaccia...");
-            break;
-        } else {
-            println!("Credenziali errate. Accesso negato.\n");
-            // Resettiamo le credenziali per richiederle da input al prossimo ciclo
-            current_user = None;
-            current_pass = None;
+        let opts = geo_net::connection::ConnectOptions {
+            server_addr: args.server.clone(),
+            username: user,
+            password: pass,
+            role: geo_protocol::Role::Admin,
+            register: false,
+        };
+
+        match geo_net::connection::connect_and_auth(&opts).await {
+            Ok(f) => {
+                println!("Login concesso. Avvio interfaccia...");
+                break f;
+            }
+            Err(e) => {
+                println!("Errore di accesso: {}", e);
+                current_user = None;
+                current_pass = None;
+            }
         }
-    }
+    };
 
-    // Qui in futuro ci sarà la logica di connessione asincrona tramite tokio
-    // let stream = tokio::net::TcpStream::connect(&args.server).await?;
+    let (command_tx, command_rx) = tokio::sync::mpsc::channel(32);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(32);
 
-    // 3. Setup del terminale ed esecuzione UI Mock
+    tokio::spawn(geo_admin::network::run_admin_connection(framed, command_rx, event_tx));
+
+    // 3. Setup del terminale ed esecuzione UI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Il mock data deve trovarsi in assets rispetto alla cwd di esecuzione
-    let mut ui = AdminUi::new("assets/mock_admin_data.json")?;
-    ui.run(&mut terminal)?;
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(panic_info);
+    }));
+
+    let mut ui = AdminUi::new(command_tx, event_rx);
+    let res = ui.run(&mut terminal);
 
     // Ripristino del terminale
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
+    let _ = std::panic::take_hook();
+
+    res?;
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_args_parsing() {
+        let args = Args::try_parse_from(["geo-admin", "--server", "192.168.1.1:8080", "--username", "admin", "--password", "secret"]).unwrap();
+        assert_eq!(args.server, "192.168.1.1:8080");
+        assert_eq!(args.username, Some("admin".to_string()));
+        assert_eq!(args.password, Some("secret".to_string()));
+    }
 }

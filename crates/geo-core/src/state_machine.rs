@@ -34,6 +34,26 @@ impl UserState {
     pub fn counts_as_pause(&self) -> bool {
         matches!(self, UserState::Stopped)
     }
+
+    /// The lowercase token stored in the `state` column of `state_intervals`.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            UserState::Disconnected => "disconnected",
+            UserState::Stopped => "stopped",
+            UserState::Moving => "moving",
+        }
+    }
+
+    /// Parses the token written by `as_db_str`; `None` for anything else
+    /// (a corrupt DB row must not panic).
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "disconnected" => Some(UserState::Disconnected),
+            "stopped" => Some(UserState::Stopped),
+            "moving" => Some(UserState::Moving),
+            _ => None
+        }
+    }
 }
 
 /// A state change that happened at a given instant.
@@ -186,6 +206,16 @@ mod tests {
     /// no `Utc::now()`, so a full trip is replayed deterministically.
     fn t(offset_secs: i64) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 20, 12, 0, 0).unwrap() + Duration::seconds(offset_secs)
+    }
+
+    #[test]
+    fn test_user_state_db_string_roundtrip() {
+        for s in [UserState::Disconnected, UserState::Stopped, UserState::Moving] {
+            assert_eq!(UserState::from_db_str(s.as_db_str()), Some(s));
+        }
+        assert_eq!(UserState::from_db_str("garbage"), None);
+        // I token esatti devono combaciare con schema.sql.
+        assert_eq!(UserState::Moving.as_db_str(), "moving");
     }
 
     #[test]
