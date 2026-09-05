@@ -52,7 +52,7 @@ impl ClientUi {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
         let (key_tx, mut key_rx) = mpsc::channel::<CEvent>(16);
-        tokio::task::spawn_blocking(move || {
+        std::thread::spawn(move || {
             loop {
                 if event::poll(Duration::from_millis(100)).unwrap_or(false) {
                     if let Ok(ev) = event::read() {
@@ -77,7 +77,7 @@ impl ClientUi {
 
                 let pos_str = self.last_pos.map_or_else(
                     || "In attesa... (usa /pos lat,lon per input manuale)".to_string(),
-                    |p| format!("Lat: {:.5}, Lon: {:.5}.", p.lat, p.lon)
+                    |p| format!("Lat: {:.5}, Lon: {:.5}", p.lat, p.lon)
                 );
 
                 let state_str = match self.current_state {
