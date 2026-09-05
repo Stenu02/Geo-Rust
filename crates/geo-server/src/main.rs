@@ -21,10 +21,6 @@ struct Args {
     #[arg(long, env = "GEO_LOG", default_value = "cpu_usage.csv")]
     log: PathBuf,
 
-    /// Accelerazione temporale per la demo. Default 1 = tempi reali di specifica.
-    #[arg(long, default_value_t = 1)]
-    time_scale: u32,
-
     /// Crea un account amministratore e termina, senza avviare il server.
     ///
     /// I camionisti si registrano da soli attraverso il protocollo;
@@ -58,7 +54,6 @@ async fn main() -> anyhow::Result<()> {
         bind: args.bind,
         db_path: args.db,
         log_path: args.log,
-        time_scale: args.time_scale,
     })
     .await?;
 

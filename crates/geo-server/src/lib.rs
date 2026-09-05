@@ -30,7 +30,6 @@ pub struct ServerConfig {
     pub bind: SocketAddr,
     pub db_path: std::path::PathBuf,
     pub log_path: std::path::PathBuf,
-    pub time_scale: u32,
 }
 
 pub struct Server {

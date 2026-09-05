@@ -27,7 +27,6 @@ fn config() -> ServerConfig {
         // file condiviso li farebbe bloccare a vicenda sul lock SQLite.
         db_path: PathBuf::from(":memory:"),
         log_path: PathBuf::from("test.csv"),
-        time_scale: 1,
     }
 }
 
