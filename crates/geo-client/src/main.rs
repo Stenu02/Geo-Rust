@@ -1,3 +1,7 @@
+//! Punto di ingresso del client camionista
+//! Collega il simulatore di movimento al layer di rete, garantendo l'invio
+//! delle posizioni a intervalli regolari senza bloccare l'interfaccia
+
 use clap::Parser;
 use geo_client::simulator::{PositionSimulator, Strategy};
 use std::path::PathBuf;
@@ -7,9 +11,8 @@ use geo_net::connection::{ClientHandle, Command, ConnectOptions, ReconnectPolicy
 use geo_protocol::Role;
 use tokio::sync::watch;
 
-/// argomenti da riga di comando per il client del camionista
 #[derive(Parser)]
-#[command(name = "geo-client", about = "client camionista")]
+#[command(name = "geo-client", about = "Client camionista")]
 struct Args {
     #[arg(long, env = "GEO_SERVER", default_value = "127.0.0.1:7878")]
     server: String,
@@ -20,37 +23,36 @@ struct Args {
     #[arg(long, env = "GEO_PASS")]
     password: String,
 
-    /// esegue la registrazione prima del login (risolve il blocco sollevato dal revisore)
+    /// Permette di creare l'utente al volo se il DB è vuoto
     #[arg(long, default_value_t = false)]
     register: bool,
 
-    // strategie di simulazione
-    /// 1. percorso del file traccia (se usato attiva Strategy::File)
+    /// Percorso file traccia (attiva lettura file)
     #[arg(long, env = "GEO_TRACK")]
     track: Option<PathBuf>,
 
-    /// 2. attiva Strategy::Interpolated (es: "45.0,7.0;46.0,7.0")
+    /// Partenza e arrivo (attiva interpolazione)
     #[arg(long)]
     interpolated: Option<String>,
 
-    /// 4. attiva Strategy::Random (es: "45.0,7.0;5.0" origin_lat,origin_lon;radius_km)
+    /// Genera posizioni entro un raggio dall'origine (es: "45.0,7.0;5.0")
     #[arg(long)]
     random: Option<String>,
 
-    /// fattore di accelerazione del tempo (default 1 = scala reale)
+    /// Modifica il fattore temporale per la demo (default 1 = tempi reali)
     #[arg(long, default_value_t = 1)]
     time_scale: u32,
 
-    /// disabilita la TUI per test di carico
+    /// Disabilita la TUI per test di carico e riduzione overhead
     #[arg(long, default_value_t = false)]
     headless: bool,
 }
 
-/// helper per il parsing delle coordinate dalle stringhe CLI per Random e Interpolated
+/// Helper per il parsing delle coordinate dalle stringhe CLI per Random e Interpolated
 fn parse_pos(s: &str) -> anyhow::Result<Position> {
     let parts: Vec<&str> = s.split(',').collect();
     if parts.len() != 2 {
-        anyhow::bail!("Formato coordinata errato. Usa: lat,lon");
+        anyhow::bail!("Formato coordinata errato. Usa: lat,lon.");
     }
     let lat: f64 = parts[0].trim().parse()?;
     let lon: f64 = parts[1].trim().parse()?;
@@ -62,25 +64,30 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    // selezione della strategia corretta in base agli argomenti CLI passati
+    // Il simulatore viene configurato in base ai parametri CLI
+    // Se non c'è nulla, ricade su Manual
     let strategy = if let Some(path) = args.track {
         Strategy::File { path }
     } else if let Some(interp_str) = args.interpolated {
         let parts: Vec<&str> = interp_str.split(';').collect();
         if parts.len() != 2 {
-            anyhow::bail!("Formato interpolated errato. Usa: lat1,lon1;lat2,lon2");
+            anyhow::bail!("Formato interpolated errato. Usa: lat1,lon1;lat2,lon2.");
         }
-        let from = parse_pos(parts[0])?;
-        let to = parse_pos(parts[1])?;
-        Strategy::Interpolated { from, to, duration_secs: 600, pauses: vec![] } // durata fissa 10 min per test
+        Strategy::Interpolated {
+            from: parse_pos(parts[0])?,
+            to: parse_pos(parts[1])?,
+            duration_secs: 600,
+            pauses: vec![]
+        }
     } else if let Some(rnd_str) = args.random {
         let parts: Vec<&str> = rnd_str.split(';').collect();
         if parts.len() != 2 {
-            anyhow::bail!("Formato random errato. Usa: lat,lon;raggio_km");
+            anyhow::bail!("Formato random errato. Usa: lat,lon;raggio_km.");
         }
-        let origin = parse_pos(parts[0])?;
-        let radius_km: f64 = parts[1].trim().parse()?;
-        Strategy::Random { origin, radius_km }
+        Strategy::Random {
+            origin: parse_pos(parts[0])?,
+            radius_km: parts[1].trim().parse()?
+        }
     } else {
         Strategy::Manual
     };
@@ -95,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         "Avvio client camionista"
     );
 
-    // usa ConnectOptions di geo-net
+    // Delega a geo-net la gestione della rete e dei retry
     let opts = ConnectOptions {
         server_addr: args.server.clone(),
         username: args.username.clone(),
@@ -103,10 +110,10 @@ async fn main() -> anyhow::Result<()> {
         role: Role::Trucker,
         register: args.register,
     };
-
     let handle = ClientHandle::connect(opts, ReconnectPolicy::default()).await?;
     tracing::info!("Connessione al server stabilita.");
 
+    // Viene usato tokio::time::interval per evitare l'accumulo di deriva temporale
     let scale = args.time_scale.max(1);
     let interval_duration = Duration::from_secs(30) / scale;
     let mut ticker = tokio::time::interval(interval_duration);
@@ -115,19 +122,16 @@ async fn main() -> anyhow::Result<()> {
     let command_tx = handle.command_tx.clone();
     let event_rx = handle.event_rx;
 
-    // canale watch: permette al loop asincrono di aggiornare l'interfaccia
-    // con le ultime coordinate calcolate senza bloccarsi
+    // Canali per comunicare con la UI senza bloccare il runtime async
     let (pos_tx, pos_rx) = watch::channel(None);
+    let (manual_pos_tx, mut manual_pos_rx) = tokio::sync::mpsc::channel::<Position>(10);
     let is_manual = matches!(strategy, Strategy::Manual);
 
-    // canale mpsc: cattura l'inserimento manuale delle coordinate dalla TUI
-    let (manual_pos_tx, mut manual_pos_rx) = tokio::sync::mpsc::channel::<Position>(10);
-
-    // task in background per l'emissione delle posizioni e l'ascolto di aggiornamenti manuali
+    // Task asincrono dedicato all'avanzamento del simulatore e all'invio rete
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                // scatta il timer di 30 secondi
+                // Scatta il timer di invio
                 _ = ticker.tick() => {
                     let pos = simulator.next_position(elapsed_secs);
 
@@ -135,16 +139,15 @@ async fn main() -> anyhow::Result<()> {
                         tracing::info!(elapsed_secs, lat = pos.lat, lon = pos.lon, "Invio posizione.");
                     }
 
-                    // comunica la nuova posizione alla UI
                     let _ = pos_tx.send(Some(pos));
 
                     if command_tx.send(Command::PositionUpdate { position: pos }).await.is_err() {
-                        break; // rete irraggiungibile o programma terminato
+                        break;
                     }
                     elapsed_secs += 30;
                 }
 
-                // l'utente ha digitato "/pos lat,lon" dalla TUI
+                // Intercetta le coordinate inserite a mano dalla TUI
                 Some(new_pos) = manual_pos_rx.recv() => {
                     if is_manual {
                         simulator.set_manual_position(new_pos);
@@ -165,13 +168,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        // avvia l'interfaccia grafica
         #[cfg(feature = "tui")]
         {
             use geo_client::tui::ClientUi;
             let mut ui = ClientUi::new();
-
-            // per permettere alla TUI di inviare comandi di chat e coordinate manuali, passa entrambi i Sender
             if let Err(e) = ui.run(handle.command_tx.clone(), manual_pos_tx, event_rx, pos_rx).await {
                 tracing::error!("Errore nell'esecuzione della TUI: {}.", e);
             }
