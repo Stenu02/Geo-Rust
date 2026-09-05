@@ -1,6 +1,7 @@
-//! Analisi del movimento di un utente su un periodo.
+//! Analisi del movimento di un utente su un periodo (R8, R9, R10, R11).
 //!
-//! Il calcolo avviene qui ed e' invocato dal server
+//! Il calcolo avviene qui ed è invocato dal server: `geo-admin` riceve un
+//! `MovementReport` già pronto e si limita a mostrarlo.
 
 use crate::interval::{total_in, StateInterval};
 use crate::position::{FixedPosition, UserId};
@@ -12,41 +13,40 @@ use crate::UserState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovementReport {
-    /// Chi, quale periodo e' stato chiesto e su quali estremi si e' risolto.
+    /// Chi, quale periodo è stato chiesto e su quali estremi si è risolto.
     pub user: UserId,
     pub spec: RangeSpec,
     pub range: TimeRange,
 
-    /// The polyline: the positions recorded in the period, in chronological order.
+    /// La polilinea: le posizioni registrate nel periodo, in ordine cronologico.
     pub track: Vec<FixedPosition>,
-    /// The total distance traveled, in kilometers (sum of the legs, Haversine).
+    /// La distanza totale percorsa, in chilometri (somma delle tratte, Haversine).
     pub distance_km: f64,
 
-    // --- R9: average speed ---
-    /// distance / movement duration. The "driving" speed.
+    // --- R9: velocita' media ---
+    /// Distanza / durata del movimento. La velocità "di marcia".
     pub avg_speed_moving_kmh: f64,
-    /// distance / (movement + pauses). The "overall" speed, rests included.
+    /// Distanza / (movimento + pause). La velocità "complessiva", soste incluse.
     pub avg_speed_overall_kmh: f64,
 
-    // --- R10: durations ---
-    /// Total time in the MOVING state.
+    // --- R10: durate ---
+    /// Tempo totale nello stato IN MOVIMENTO.
     pub moving_time: Duration,
-    /// Total time in the STOPPED state.
+    /// Tempo totale nello stato FERMO.
     pub paused_time: Duration,
-    /// Total time in the DISCONNECTED state. Reported separately: it is NOT a pause.
-    /// Also used by the balance check (see `interval::total_in`).
+    /// Tempo totale nello stato SCONNESSO. Riportato a parte: NON è una pausa.
+    /// Serve anche alla verifica di quadratura (vedi `interval::total_in`).
     pub disconnected_time: Duration,
 
-    /// Number of distinct pauses in the period. Not required, but it is the information
-    /// a real administrator would want next to the total duration.
+    /// Numero di soste distinte nel periodo.
     pub pause_count: usize,
 }
 
-/// Computes the report for a user over a period.
+/// Calcola il report per un utente su un periodo.
 ///
-/// Expected preconditions: `intervals` and `positions` concern A SINGLE user and are
-/// already coarsely filtered on the period by the SQL query. The fine clipping at the
-/// endpoints happens here, via `StateInterval::clip_to`.
+/// Precondizioni attese: `intervals` e `positions` riguardano UN SOLO utente e sono
+/// gia' filtrati grossolanamente sul periodo dalla query SQL. Il troncamento rispetto
+/// agli estremi avviene qui, tramite `StateInterval::clip_to`.
 pub fn analyze(
     user: UserId,
     spec: RangeSpec,
@@ -85,7 +85,7 @@ pub fn analyze(
     }
 }
 
-/// Total distance of a polyline, in kilometers.
+/// Distanza totale di una polilinea, in chilometri.
 pub fn total_distance_km(positions: &[FixedPosition]) -> f64 {
     positions.windows(2).map(|w| haversine_km(&w[0].value, &w[1].value)).sum()
 }
@@ -115,14 +115,14 @@ mod tests {
 
     #[test]
     fn test_total_distance_km_sums_legs() {
-        // Turin -> Asti -> Turin: two legs of ~44 km each.
+        // Torino -> Asti -> Torino: due tratte di ~44 km ciascuna.
         let track = [
             fp(utc(10, 0), 45.0703, 7.6869),
             fp(utc(11, 0), 44.9009, 8.2065),
             fp(utc(12, 0), 45.0703, 7.6869),
         ];
         let d = total_distance_km(&track);
-        assert!((d - 88.0).abs() < 2.0, "expected ~88 km, got {d}");
+        assert!((d - 88.0).abs() < 2.0, "atteso ~88 km, ottenuto {d}");
     }
 
     #[test]
@@ -133,7 +133,8 @@ mod tests {
 
     #[test]
     fn test_avg_speed_both_definitions() {
-        // 1h moving + 1h paused: the overall speed must be exactly half the driving one.
+        // 1h di movimento + 1h di pausa: la velocita' complessiva deve essere
+        // esattamente la meta' di quella di marcia.
         let range = TimeRange::new(utc(10, 0), utc(20, 0));
         let intervals = [
             StateInterval::closed(UserState::Moving, utc(11, 0), utc(12, 0)),
@@ -145,14 +146,14 @@ mod tests {
         assert_eq!(r.moving_time, Duration::hours(1));
         assert_eq!(r.paused_time, Duration::hours(1));
         assert!(r.distance_km > 0.0);
-        // moving = distance / 1h; overall = distance / 2h
+        // marcia = distanza / 1h; complessiva = distanza / 2h
         assert!((r.avg_speed_moving_kmh - r.distance_km).abs() < 1e-9);
         assert!((r.avg_speed_overall_kmh - r.distance_km / 2.0).abs() < 1e-9);
     }
 
     #[test]
     fn test_avg_speed_zero_when_not_moving() {
-        // No movement: the guard returns 0.0, never NaN from a divide-by-zero.
+        // Nessun movimento: la guardia restituisce 0.0, mai NaN da una divisione per zero.
         let range = TimeRange::new(utc(10, 0), utc(20, 0));
         let intervals = [StateInterval::closed(UserState::Stopped, utc(11, 0), utc(13, 0))];
         let positions = [fp(utc(11, 0), 45.0, 7.0)];
@@ -163,10 +164,10 @@ mod tests {
 
     #[test]
     fn test_analyze_clips_track_to_range() {
-        // A position before the range is excluded from both the track and the distance.
+        // Una posizione prima del range e' esclusa dalla track e dalla distanza.
         let range = TimeRange::new(utc(10, 0), utc(20, 0));
         let positions = [
-            fp(utc(9, 0), 45.0, 7.0), // before range -> excluded
+            fp(utc(9, 0), 45.0, 7.0), // prima del range -> esclusa
             fp(utc(11, 0), 45.0, 7.0),
             fp(utc(12, 0), 45.5, 7.0),
         ];
