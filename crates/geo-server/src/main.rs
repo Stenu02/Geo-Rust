@@ -5,6 +5,7 @@ use clap::Parser;
 use geo_server::{auth, storage::StorageHandle, Server, ServerConfig};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 #[command(name = "geo-server", about = "Server GeoRuggine")]
@@ -61,7 +62,39 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
 
+    // Il segnale va agganciato PRIMA di `run`, che consuma il server.
+    ascolta_interruzione(server.shutdown_handle());
+
     server.run().await
+}
+
+/// Trasforma Ctrl-C in una richiesta di chiusura ordinata.
+///
+/// Senza questo il token di chiusura non veniva cancellato da nessuno: il
+/// server si poteva solo ammazzare, e il controllo periodico e il log della
+/// CPU restavano tagliati a meta' invece di chiudersi.
+///
+/// `tokio::signal::ctrl_c` copre sia Unix (SIGINT) sia Windows (CTRL_C_EVENT),
+/// quindi non serve codice separato per piattaforma.
+fn ascolta_interruzione(chiusura: CancellationToken) {
+    tokio::spawn(async move {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "impossibile ascoltare Ctrl-C");
+            return;
+        }
+        tracing::info!("Ctrl-C ricevuto: chiusura ordinata, premere ancora per uscire subito");
+        chiusura.cancel();
+
+        // Una volta installato, il gestore di tokio resta al suo posto: i
+        // segnali successivi non terminano piu' il processo da soli. Senza
+        // questa via d'uscita, una chiusura che si impuntasse lascerebbe il
+        // terminale senza alcun modo di fermare il server.
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::warn!("secondo Ctrl-C: uscita immediata");
+            // 128 + SIGINT, la convenzione della shell per "ucciso da segnale".
+            std::process::exit(130);
+        }
+    });
 }
 
 /// Crea un account con ruolo amministratore e termina.
