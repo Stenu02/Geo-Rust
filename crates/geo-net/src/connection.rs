@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use geo_core::Position;
 use geo_protocol::{
-    decode, encode, frame_codec, AdminMessage, AdminReply, ClientMessage, Hello, Role,
+    decode, encode, frame_codec, AdminMessage, AdminReply, ClientMessage, ErrorCode, Hello, Role,
     ServerMessage, PROTOCOL_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -119,6 +119,7 @@ pub async fn connect_and_auth(opts: &ConnectOptions) -> anyhow::Result<ClientFra
 
                 match recv_msg::<ServerMessage>(&mut framed).await? {
                     ServerMessage::RegisterOk { .. } => {}
+                    ServerMessage::Error { code: ErrorCode::UsernameTaken, .. } => {}
                     other => return Err(anyhow::anyhow!("Registrazione fallita: {:?}.", other)),
                 }
             }
