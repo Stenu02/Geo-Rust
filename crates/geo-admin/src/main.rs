@@ -23,7 +23,8 @@ struct Args {
     #[arg(long, env = "GEO_ADMIN_USER")]
     username: Option<String>,
 
-    #[arg(long, env = "GEO_ADMIN_PASS")]
+    /// Nascosta da --help: la password si digita al prompt.
+    #[arg(long, env = "GEO_ADMIN_PASS", hide = true)]
     password: Option<String>,
 }
 
@@ -31,15 +32,6 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     // 1. Parsing argomenti
     let args = Args::parse();
-    
-    // Controllo inserimenti parziali
-    if args.username.is_some() ^ args.password.is_some() {
-        eprintln!("Errore: Inserimento parziale non consentito.");
-        eprintln!("Metodi di inserimento corretti:");
-        eprintln!("  argomenti completi: --username <USER> --password <PASS>");
-        eprintln!("  avvia il programma senza argomenti e inseriscili quando richiesto.");
-        std::process::exit(1);
-    }
 
     let mut current_user = args.username;
     let mut current_pass = args.password;

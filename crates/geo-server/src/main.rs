@@ -91,13 +91,21 @@ async fn crea_amministratore(
     username: &str,
     password: Option<String>,
 ) -> anyhow::Result<()> {
-    let password = password.ok_or_else(|| {
-        anyhow::anyhow!("manca la password: impostare la variabile d'ambiente GEO_ADMIN_PASSWORD")
-    })?;
+    // Da script arriva dall'ambiente, a mano si digita adesso senza mostrarla.
+    let password = match password {
+        Some(dall_ambiente) => dall_ambiente,
+        None => {
+            let scelta = rpassword::prompt_password("Password del nuovo amministratore: ")?;
+            if scelta != rpassword::prompt_password("Ripeti la password: ")? {
+                anyhow::bail!("le due password non coincidono");
+            }
+            scelta
+        }
+    };
 
-    if password.len() < 8 {
-        anyhow::bail!("la password deve essere di almeno 8 caratteri");
-    }
+    // Le stesse regole della registrazione dalla rete: contano i caratteri,
+    // non i byte.
+    auth::valida_password(&password).map_err(|e| anyhow::anyhow!(e))?;
 
     let storage = StorageHandle::spawn(db)?;
     let phc = auth::hash_password_async(password).await?;

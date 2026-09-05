@@ -20,8 +20,10 @@ struct Args {
     #[arg(long, env = "GEO_USER")]
     username: String,
 
-    #[arg(long, env = "GEO_PASS")]
-    password: String,
+    /// Nascosta da --help: la password si digita al prompt. L'argomento resta
+    /// perche' `fleet` deve poterla passare ai client che avvia.
+    #[arg(long, env = "GEO_PASS", hide = true)]
+    password: Option<String>,
 
     /// Permette di creare l'utente al volo se il DB è vuoto
     #[arg(long, default_value_t = false)]
@@ -62,7 +64,13 @@ fn parse_pos(s: &str) -> anyhow::Result<Position> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // Se non arriva dall'ambiente la si chiede adesso, senza mostrarla.
+    let password = match args.password.take() {
+        Some(p) => p,
+        None => chiedi_password(args.register)?,
+    };
 
     // Il simulatore viene configurato in base ai parametri CLI
     // Se non c'è nulla, ricade su Manual
@@ -106,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     let opts = ConnectOptions {
         server_addr: args.server.clone(),
         username: args.username.clone(),
-        password: args.password.clone(),
+        password,
         role: Role::Trucker,
         register: args.register,
     };
@@ -184,4 +192,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Legge la password senza mostrarla a schermo.
+///
+/// In registrazione la fa ripetere: un refuso creerebbe un account con una
+/// password che non si conosce, e lo si scoprirebbe solo al collegamento
+/// successivo.
+fn chiedi_password(registrazione: bool) -> anyhow::Result<String> {
+    let password = rpassword::prompt_password("Password: ")?;
+    if registrazione && password != rpassword::prompt_password("Ripeti la password: ")? {
+        anyhow::bail!("le due password non coincidono");
+    }
+    Ok(password)
 }

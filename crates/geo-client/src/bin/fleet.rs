@@ -22,7 +22,7 @@ struct Args {
     prefix: String,
 
     /// Password identica per tutti i client simulati
-    #[arg(long, default_value = "123")]
+    #[arg(long, default_value = "flottaprova")]
     password: String,
 
     /// Percorso del file traccia (opzionale)
@@ -51,10 +51,12 @@ fn main() -> anyhow::Result<()> {
             .arg("--")
             .arg("--server").arg(&args.server)
             .arg("--username").arg(&username)
-            .arg("--password").arg(&args.password)
             .arg("--time-scale").arg(args.time_scale.to_string())
             .arg("--headless") // più TUI in raw mode sullo stesso terminale si scontrerebbero
-            .arg("--register"); // auto-popola sqlite senza step preliminari
+            .arg("--register") // auto-popola sqlite senza step preliminari
+            // Dall'ambiente e non fra gli argomenti: cosi' la password non
+            // compare in `ps` una volta per ogni figlio avviato.
+            .env("GEO_PASS", &args.password);
 
         if let Some(track) = &args.track {
             cmd.arg("--track").arg(track);

@@ -30,3 +30,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
+rpassword = "7.5.4"
