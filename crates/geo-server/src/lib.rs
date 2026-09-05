@@ -114,7 +114,7 @@ impl Server {
                         if let Ok(cpu_dur) = cpu_log::get_cpu_time() {
                             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
                                 use std::io::Write;
-                                let now = chrono::Utc::now().to_rfc3339();
+                                let now = chrono::Local::now().to_rfc3339();
                                 let _ = writeln!(f, "{},{}", now, cpu_dur.as_millis());
                             }
                         }

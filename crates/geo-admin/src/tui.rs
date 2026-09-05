@@ -77,8 +77,9 @@ impl AppState {
                 self.query_report = Some(report);
                 self.selected_tab = 1; // Cambio automatico al tab delle interrogazioni
             }
-            AdminReply::Chat { from, username, text, .. } => {
-                self.chats.entry(from).or_default().push((username, text));
+            AdminReply::Chat { from, username, text, at } => {
+                let time = at.with_timezone(&chrono::Local).format("%H:%M:%S");
+                self.chats.entry(from).or_default().push((format!("[{time}] {username}"), text));
             }
             AdminReply::Error { code, detail } => {
                 self.last_error = Some(format!("{:?}: {}", code, detail));
@@ -170,7 +171,8 @@ impl AppState {
                                 self.last_error = Some("Errore di connessione: impossibile inviare il messaggio.".to_string());
                             } else {
                                 // Mostra subito in locale
-                                self.chats.entry(active_user).or_default().push(("ADMIN".to_string(), text));
+                                let time = chrono::Local::now().format("%H:%M:%S");
+                                self.chats.entry(active_user).or_default().push((format!("[{time}] ADMIN"), text));
                                 self.input.clear();
                                 self.typing_mode = false;
                                 self.cursor_pos = 0;
@@ -355,7 +357,7 @@ impl AdminUi {
                 None => "Sconosciuta".to_string(),
             };
             let update_str = match item.last_update {
-                Some(dt) => dt.format("%H:%M:%S").to_string(),
+                Some(dt) => dt.with_timezone(&chrono::Local).format("%H:%M:%S").to_string(),
                 None => "-".to_string(),
             };
 
@@ -391,6 +393,9 @@ impl AdminUi {
             let paused_secs = rep.paused_time.num_seconds();
             let disc_secs = rep.disconnected_time.num_seconds();
             
+            let start_str = rep.range.start.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S");
+            let end_str = rep.range.end.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S");
+            
             let text = format!(
                 "Utente analizzato: {}\n\n\
                  Periodo di analisi: {}\n\
@@ -404,8 +409,8 @@ impl AdminUi {
                  Tempo disconnesso: {} min {} sec",
                 rep.user,
                 rep.spec.label(),
-                rep.range.start,
-                rep.range.end,
+                start_str,
+                end_str,
                 rep.distance_km,
                 rep.avg_speed_moving_kmh,
                 rep.avg_speed_overall_kmh,
@@ -461,7 +466,7 @@ impl AdminUi {
 
         if let Some(history) = self.state.chats.get(&active_user_id) {
             for (sender, text) in history {
-                chat_history.push_str(&format!("[{}]: {}\n", sender, text));
+                chat_history.push_str(&format!("{}: {}\n", sender, text));
             }
         }
 

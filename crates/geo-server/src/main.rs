@@ -39,9 +39,19 @@ struct Args {
     admin_password: Option<String>,
 }
 
+struct LocalTimer;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z"))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_timer(LocalTimer)
+        .init();
     let args = Args::parse();
 
     // Modalita' "crea amministratore": fa una cosa sola e termina, senza mai

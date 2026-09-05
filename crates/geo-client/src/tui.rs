@@ -26,6 +26,7 @@ pub struct ClientUi {
     pub chat_history: Vec<String>,
     pub current_state: UserState,
     pub last_pos: Option<Position>,
+    pub last_update: Option<chrono::DateTime<chrono::Local>>,
 }
 
 impl ClientUi {
@@ -35,6 +36,7 @@ impl ClientUi {
             chat_history: Vec::new(),
             current_state: UserState::Disconnected,
             last_pos: None,
+            last_update: None,
         }
     }
 
@@ -86,7 +88,12 @@ impl ClientUi {
                     UserState::Moving => "IN MOVIMENTO",
                 };
 
-                let status_p = Paragraph::new(format!("Stato: {state_str}.\nPosizione: {pos_str}."))
+                let update_str = match self.last_update {
+                    Some(time) => format!(" (aggiornato alle {})", time.format("%H:%M:%S")),
+                    None => String::new(),
+                };
+
+                let status_p = Paragraph::new(format!("Stato: {state_str}.\nPosizione: {pos_str}{update_str}."))
                     .block(Block::default().title(" Sensore ").borders(Borders::ALL));
                 f.render_widget(status_p, chunks[0]);
 
@@ -130,7 +137,10 @@ impl ClientUi {
                     }
                 }
 
-                Ok(_) = pos_rx.changed() => self.last_pos = *pos_rx.borrow(),
+                Ok(_) = pos_rx.changed() => {
+                    self.last_pos = *pos_rx.borrow();
+                    self.last_update = Some(chrono::Local::now());
+                }
 
                 // Tastiera su thread separato per evitare blocking
                 Some(input_event) = key_rx.recv() => {
@@ -159,7 +169,8 @@ impl ClientUi {
                                         }
                                     } else {
                                         // Invio risposta in chat
-                                        self.chat_history.push(format!("Tu: {msg}"));
+                                        let time = chrono::Local::now().format("%H:%M:%S");
+                                        self.chat_history.push(format!("[{time}] Tu: {msg}"));
                                         let _ = command_tx.send(Command::Chat { text: msg }).await;
                                     }
                                     self.input.clear();

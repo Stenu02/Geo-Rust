@@ -61,9 +61,19 @@ fn parse_pos(s: &str) -> anyhow::Result<Position> {
     Ok(Position::new(lat, lon))
 }
 
+struct LocalTimer;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z"))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_timer(LocalTimer)
+        .init();
     let mut args = Args::parse();
 
     // Se non arriva dall'ambiente la si chiede adesso, senza mostrarla.
