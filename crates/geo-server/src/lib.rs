@@ -1,9 +1,8 @@
-//! Il server: apertura della porta di ascolto e accettazione delle connessioni.
-
-//! Possiede le tre risorse condivise e ne consegna una copia a ogni sessione:
-//!   storage    coda verso l'unico proprietario della connessione al database
-//!   registry   mappa di chi è collegato in questo momento
-//!   shutdown   segnale di chiusura,
+//! Il server: apre la porta di ascolto e accetta le connessioni.
+//!
+//! Possiede tre risorse condivise e ne consegna una copia a ogni sessione:
+//! `storage` per parlare con il database, `registry` per sapere chi e'
+//! collegato, `shutdown` per il segnale di chiusura.
 
 pub mod admin;
 pub mod auth;
@@ -20,12 +19,11 @@ use tokio_util::sync::CancellationToken;
 use crate::registry::Registry;
 use crate::storage::StorageHandle;
 
-/// Schema incorporato nel binario
+/// Schema delle tabelle, incorporato nell'eseguibile a tempo di compilazione.
 pub const SCHEMA: &str = include_str!("schema.sql");
 
+/// Impostazioni con cui il server viene avviato.
 #[derive(Debug, Clone)]
-
-///Contenitore di impostazioni di configurazioni
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub db_path: std::path::PathBuf,
@@ -33,26 +31,28 @@ pub struct ServerConfig {
 }
 
 pub struct Server {
-    ///Porta di acolto
+    /// Socket su cui arrivano le connessioni.
     listener: TcpListener,
     config: ServerConfig,
-    /// Attore proprietario del database
+    /// Coda verso l'unico task che tocca il database.
     storage: StorageHandle,
-    /// Chi e' collegato adesso. Anche questo condiviso da tutte le sessioni.
+    /// Chi e' collegato adesso, condiviso da tutte le sessioni.
     registry: Registry,
-    /// Segnale di chiusura
+    /// Cancellandolo si chiedono la chiusura a tutti i task insieme.
     shutdown: CancellationToken,
 }
 
 impl Server {
-    /// Apre il socket di ascolto.
+    /// Apre la porta di ascolto e prepara le risorse condivise.
     pub async fn bind(config: ServerConfig) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(config.bind).await?;
-        // Avvia l'attore storage prima di accettare connessioni.
+
+        // L'attore del database parte prima di accettare connessioni: le
+        // sessioni devono trovarlo gia' pronto.
         let storage = StorageHandle::spawn(&config.db_path)?;
 
-        // Se l'esecuzione precedente e' finita male, sul database restano
-        // intervalli senza fine. E' necessario chiuderli prima di accettare connessioni.
+        // Se l'esecuzione precedente e' finita male restano intervalli di stato
+        // senza fine. Vanno chiusi adesso, prima che arrivi qualcuno.
         let pendenti = storage.close_dangling(chrono::Utc::now()).await?;
         if pendenti > 0 {
             tracing::warn!(
@@ -69,10 +69,12 @@ impl Server {
         })
     }
 
+    /// Indirizzo effettivo: con la porta 0 il sistema ne assegna una libera.
     pub fn local_addr(&self) -> anyhow::Result<SocketAddr> {
         Ok(self.listener.local_addr()?)
     }
 
+    /// Copia del segnale di chiusura, per chi deve poter fermare il server.
     pub fn shutdown_handle(&self) -> CancellationToken {
         self.shutdown.clone()
     }
@@ -88,6 +90,7 @@ impl Server {
 
     /// Ciclo di accettazione, fino alla richiesta di chiusura.
     pub async fn run(self) -> anyhow::Result<()> {
+        // Controllo periodico degli stati: vive quanto il server.
         let valutatore = evaluator::spawn(
             self.registry.clone(),
             self.storage.clone(),
@@ -96,11 +99,13 @@ impl Server {
 
         let shutdown_clone = self.shutdown.clone();
         let log_path = self.config.log_path.clone();
+
+        // Registrazione del tempo di CPU, un campione ogni due minuti.
         let cpu_logger = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
-            // First tick fires immediately, so let's skip the write on the very first tick if we want,
-            // or just write it. Let's write the cumulative CPU time every 2 minutes.
-            // Creiamo il file log e l'header se non esiste
+
+            // Intestazione solo alla creazione: riavviando il server si
+            // continua ad accodare sul file esistente.
             if !log_path.exists() {
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
                     use std::io::Write;
@@ -111,6 +116,8 @@ impl Server {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        // Il file si riapre a ogni campione, cosi' resta
+                        // leggibile mentre il server e' in funzione.
                         if let Ok(cpu_dur) = cpu_log::get_cpu_time() {
                             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
                                 use std::io::Write;
@@ -130,14 +137,16 @@ impl Server {
 
         loop {
             tokio::select! {
-                //Segnale di chiusura
+                // Chiusura richiesta: si smette di accettare.
                 _ = self.shutdown.cancelled() => {
                     tracing::info!("chiusura richiesta");
                     break;
                 }
-                //Nuova connessione da accettare
+
                 accepted = self.listener.accept() => match accepted {
                     Ok((stream, peer)) => {
+                        // Ogni connessione diventa un task a se': una sessione
+                        // lenta non rallenta le altre.
                         let shutdown = self.shutdown.clone();
                         let storage = self.storage.clone();
                         let registry = self.registry.clone();
@@ -147,13 +156,14 @@ impl Server {
                             }
                         });
                     }
+                    // Un accept fallito non e' motivo per chiudere il server.
                     Err(e) => tracing::warn!(error = %e, "accept fallito"),
                 }
             }
         }
 
-        // Si aspetta che il controllo periodico chiuda, cosi' un'eventuale
-        // scrittura in corso arriva a termine prima che il processo esca.
+        // Si aspettano i due task periodici: una scrittura in corso arriva a
+        // termine prima che il processo esca.
         let _ = valutatore.await;
         let _ = cpu_logger.await;
 

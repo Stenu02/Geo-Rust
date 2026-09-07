@@ -1,9 +1,8 @@
-//! Il controllo periodico degli stati.
+//! Controllo periodico degli stati.
 //!
-//! E' qui che l'inattivita' prolungata diventa davvero un passaggio a FERMO.
-//! Non puo' avvenire alla ricezione di una posizione, perche' un camionista che
-//! smette di trasmettere non manda piu' niente: senza qualcuno che guardi
-//! l'orologio, resterebbe IN MOVIMENTO per sempre.
+//! Il passaggio a FERMO non puo' scattare quando arriva una posizione: un
+//! camionista che smette di trasmettere non manda piu' niente. Serve qualcuno
+//! che guardi l'orologio a intervalli regolari, e quel qualcuno e' questo task.
 
 use crate::registry::Registry;
 use crate::storage::StorageHandle;
@@ -12,14 +11,10 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-/// Ogni quanto si valutano gli stati.
+/// Ogni quanto si rivalutano gli stati.
 ///
-/// Dieci secondi: abbastanza fine da non ritardare visibilmente il passaggio a
-/// FERMO, abbastanza rado da non pesare con molti collegati.
-///
-/// Non incide sulla PRECISIONE della transizione: la macchina a stati la data
-/// all'istante esatto in cui la soglia e' scaduta, non a quando il tick se n'e'
-/// accorto. Il tick decide solo quanto tardi lo si viene a sapere.
+/// Non cambia la precisione della transizione, che porta comunque la data in
+/// cui la soglia e' scaduta: decide solo con quanto ritardo la si scopre.
 const TICK: Duration = Duration::from_secs(10);
 
 /// Avvia il controllo periodico e restituisce il suo task.
@@ -29,23 +24,28 @@ pub fn spawn(
     shutdown: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        // `interval` e non `sleep` dentro un ciclo: `sleep` fa passare il tempo
-        // DOPO il lavoro, quindi ogni giro accumula la durata dell'elaborazione
-        // e dopo qualche ora i campioni non sono piu' regolari.
+        // `interval` e non `sleep`: sleep conta il tempo dopo il lavoro, quindi
+        // ogni giro accumulerebbe la durata dell'elaborazione.
         let mut tick = tokio::time::interval(TICK);
 
         loop {
             tokio::select! {
+                // Chiusura del server: si esce dal ciclo.
                 _ = shutdown.cancelled() => break,
+
                 _ = tick.tick() => {
+                    // Un solo istante per tutti, cosi' le transizioni di questo
+                    // giro portano la stessa data.
                     let ora = Utc::now();
 
-                    // Il registry valuta tutti i collegati e restituisce le
-                    // transizioni scattate, a lucchetto gia' rilasciato. Le
-                    // scritture avvengono qui fuori: dentro un lucchetto non si
-                    // puo' aspettare.
+                    // Il registry restituisce le transizioni a lucchetto gia'
+                    // rilasciato: le scritture avvengono qui fuori perche'
+                    // dentro un lucchetto non si puo' aspettare.
                     for (user, t) in registry.tick_all(ora) {
                         tracing::info!(%user, da = ?t.from, a = ?t.to, "transizione per inattivita'");
+
+                        // Un errore di scrittura non deve fermare il ciclo:
+                        // gli altri camionisti vanno valutati comunque.
                         if let Err(e) = storage.apply_transition(user, t.to, t.at).await {
                             tracing::error!(%user, error = %e, "scrittura transizione fallita");
                         }

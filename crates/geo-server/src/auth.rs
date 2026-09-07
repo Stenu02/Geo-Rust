@@ -1,50 +1,46 @@
-//! Hashing e verifica delle password.
+//! Password: calcolo dell'impronta, verifica e regole per un nuovo account.
 //!
-//! Le password non vengono mai memorizzate in chiaro: si salva un hash Argon2
-//! con salt diverso per ogni utente, cosi' due persone con la stessa password
-//! hanno comunque record distinti nel database.
+//! Le password non vengono mai memorizzate: si salva un'impronta Argon2 con un
+//! sale diverso per ogni utente.
 
 use argon2::password_hash::{
     rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
 };
 use argon2::Argon2;
 
-/// Calcola l'hash di una password, con un salt casuale nuovo.
+/// Calcola l'impronta di una password con un sale casuale nuovo.
 ///
 /// Restituisce una stringa PHC che contiene tutto il necessario per verificarla:
-/// algoritmo, parametri, salt e hash. Il salt non va memorizzato a parte.
-///
-/// Il salt e' diverso per ogni utente: senza, due persone con la stessa password
-/// avrebbero lo stesso hash, e un attaccante che ne rompe uno li rompe entrambi.
+/// algoritmo, parametri, sale e impronta. Il sale non va conservato a parte.
 pub fn hash_password(plain: &str) -> anyhow::Result<String> {
+    // Sale nuovo a ogni chiamata: senza, due utenti con la stessa password
+    // avrebbero la stessa impronta, e romperne una le romperebbe entrambe.
     let salt = SaltString::generate(&mut OsRng);
     let phc = Argon2::default()
         .hash_password(plain.as_bytes(), &salt)
-        // password_hash::Error non implementa std::error::Error, quindi non si
-        // puo' usare `?` direttamente: va convertito a mano.
+        // L'errore di argon2 non implementa std::error::Error, quindi `?` da
+        // solo non basta: va convertito a mano.
         .map_err(|e| anyhow::anyhow!("hashing fallito: {e}"))?
         .to_string();
     Ok(phc)
 }
 
-/// Verifica una password contro la stringa PHC memorizzata.
-///
-/// Restituisce `false` anche se il PHC e' malformato: un record corrotto nel
-/// database non deve far passare nessuno, e non deve nemmeno far cadere la sessione.
+/// Verifica una password contro la stringa PHC conservata nel database.
 pub fn verify_password(plain: &str, phc: &str) -> bool {
     match PasswordHash::new(phc) {
         Ok(atteso) => Argon2::default()
             .verify_password(plain.as_bytes(), &atteso)
             .is_ok(),
+        // PHC illeggibile: si nega l'accesso senza far cadere la sessione.
         Err(_) => false,
     }
 }
 
 /// Versione asincrona di `hash_password`.
 ///
-/// L'hashing costa una trentina di millisecondi di CPU pura: chiamarlo da un task
-/// bloccherebbe un thread del runtime, e con esso tutte le altre sessioni assegnate
-/// a quel thread. Stesso motivo per cui l'attore storage gira su spawn_blocking.
+/// Il calcolo costa una trentina di millisecondi di CPU pura: dentro un task
+/// bloccherebbe un thread del runtime e con esso le altre sessioni che gli sono
+/// assegnate, quindi si sposta sul pool dei lavori bloccanti.
 pub async fn hash_password_async(plain: String) -> anyhow::Result<String> {
     tokio::task::spawn_blocking(move || hash_password(&plain)).await?
 }
@@ -53,6 +49,7 @@ pub async fn hash_password_async(plain: String) -> anyhow::Result<String> {
 pub async fn verify_password_async(plain: String, phc: String) -> bool {
     tokio::task::spawn_blocking(move || verify_password(&plain, &phc))
         .await
+        // Se il task fallisce si nega l'accesso, non si concede.
         .unwrap_or(false)
 }
 
@@ -60,22 +57,18 @@ pub async fn verify_password_async(plain: String, phc: String) -> bool {
 // Regole per un nuovo account
 // ---------------------------------------------------------------------------
 
-/// Lunghezza minima della password.
-///
-/// Vale sia per il camionista che si registra dalla rete sia per
-/// l'amministratore creato da riga di comando: due percorsi che scrivono nella
-/// stessa tabella non possono applicare criteri diversi.
+/// Lunghezza minima della password, uguale per camionisti e amministratori.
 pub const PASSWORD_MINIMA: usize = 8;
 
-/// Lunghezza massima della password. Argon2 accetta qualsiasi lunghezza, ma
-/// nessuno digita piu' di cosi' e un input enorme e' solo CPU sprecata.
+/// Tetto alla password: Argon2 accetta qualsiasi lunghezza, ma un input enorme
+/// e' solo CPU sprecata.
 pub const PASSWORD_MASSIMA: usize = 128;
 
-/// Lunghezza massima dell'username. Il database non impone limiti: senza questo
-/// un client potrebbe far scrivere righe da megabyte.
+/// Tetto al nome utente: il database non ne impone, e senza questo un client
+/// potrebbe far scrivere righe da megabyte.
 pub const USERNAME_MASSIMO: usize = 32;
 
-/// Controlla che un username sia accettabile.
+/// Controlla che un nome utente sia accettabile.
 pub fn valida_username(username: &str) -> Result<(), String> {
     if username.is_empty() {
         return Err("l'username non puo' essere vuoto".into());
@@ -95,6 +88,7 @@ pub fn valida_username(username: &str) -> Result<(), String> {
 
 /// Controlla che una password sia accettabile.
 pub fn valida_password(password: &str) -> Result<(), String> {
+    // Si contano i caratteri e non i byte: una lettera accentata ne occupa due.
     let quanti = password.chars().count();
     if quanti < PASSWORD_MINIMA {
         return Err(format!(
@@ -111,8 +105,8 @@ pub fn valida_password(password: &str) -> Result<(), String> {
 
 /// Entrambi i controlli insieme.
 ///
-/// Va chiamata PRIMA di calcolare l'hash: Argon2 e' volutamente costoso, e una
-/// registrazione destinata a essere rifiutata non deve farlo pagare al server.
+/// Va chiamata prima di calcolare l'impronta: Argon2 e' volutamente costoso, e
+/// una registrazione da rifiutare non deve farlo pagare al server.
 pub fn valida_credenziali(username: &str, password: &str) -> Result<(), String> {
     valida_username(username)?;
     valida_password(password)
@@ -130,6 +124,7 @@ mod tests {
     #[test]
     fn l_username_vuoto_o_con_spazi_e_rifiutato() {
         assert!(valida_username("").is_err());
+        // Spazio in testa e spazio in mezzo, entrambi da rifiutare.
         assert!(valida_username(" camion01").is_err());
         assert!(valida_username("camion 01").is_err());
         assert!(valida_username(&"a".repeat(USERNAME_MASSIMO + 1)).is_err());
@@ -137,6 +132,7 @@ mod tests {
 
     #[test]
     fn la_password_corta_e_rifiutata() {
+        // Un carattere sotto il minimo, il minimo esatto, uno sopra il tetto.
         assert!(valida_password(&"a".repeat(PASSWORD_MINIMA - 1)).is_err());
         assert!(valida_password(&"a".repeat(PASSWORD_MINIMA)).is_ok());
         assert!(valida_password(&"a".repeat(PASSWORD_MASSIMA + 1)).is_err());

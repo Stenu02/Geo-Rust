@@ -1,15 +1,10 @@
-//! Persistenza: l'attore proprietario dell'unica connessione SQLite.
+//! Persistenza: un solo task possiede la connessione al database.
 //!
-//! PERCHE' UN ATTORE: rusqlite e' SINCRONO. Chiamarlo da un task tokio blocca il
-//! thread del runtime e con esso tutti gli altri task assegnati a quel thread.
-//! Un solo task possiede la connessione e riceve comandi via mpsc; chi vuole
-//! leggere o scrivere allega un canale oneshot per la risposta.
-//!
-//!   [sessione 1] --+
-//!   [sessione 2] --+--> mpsc --> [storage actor] --> SQLite
-//!   [evaluator]  --+                   |
-//!                                      +--> oneshot --> risposta
-//!
+//! La libreria SQLite che usiamo e' sincrona, e chiamarla da un task bloccherebbe
+//! un thread del runtime insieme a tutti gli altri task che gli sono assegnati.
+//! Percio' nessuno la tocca direttamente: le sessioni e il controllo periodico
+//! mandano comandi su un canale, allegando a ciascuno il canale su cui vogliono
+//! la risposta.
 
 use chrono::{DateTime, Utc};
 use geo_core::position::FixedPosition;
@@ -18,28 +13,28 @@ use rusqlite::Connection;
 use std::path::Path;
 use tokio::sync::{mpsc, oneshot};
 
-/// Cio' che si sa di un utente al momento del login: chi e', come verificare la
-/// sua password, e cosa gli e' permesso fare.
+/// Identificativo, impronta della password e ruolo di un utente.
 ///
-/// Il ruolo serve al login dell'amministratore: verificare la password risponde
-/// alla domanda "sei chi dici di essere", il ruolo a "e hai il diritto di
-/// entrare da questa porta". Sono due domande diverse.
+/// La password risponde alla domanda "sei chi dici di essere", il ruolo a "hai
+/// il diritto di entrare da questa porta": sono due domande diverse, ed e' il
+/// ruolo che distingue un coordinatore da un camionista.
 pub type Utente = (UserId, String, String);
 
-/// Errore distinguibile dagli altri: permette a chi chiama di rispondere
-/// "username gia' in uso" invece di un errore generico, senza dover confrontare
-/// stringhe di messaggio.
+/// Errore riconoscibile dal chiamante senza confrontare messaggi di testo.
 #[derive(Debug, thiserror::Error)]
 #[error("username gia' in uso")]
 pub struct UsernameTaken;
 
-/// Quanti comandi possono restare in coda prima che chi invia debba aspettare.
+/// Quanti comandi restano in coda prima che chi invia debba aspettare.
+///
 /// Un limite serve: senza, una raffica di scritture farebbe crescere la coda
-/// senza freno mentre l'attore resta indietro.
+/// senza freno mentre il task del database resta indietro.
 const CODA: usize = 64;
 
-/// Cosa l'attore sa fare. Ogni variante porta con se' il canale su cui
-/// rispondere: chi manda il comando aspetta su quel canale.
+/// Le operazioni che il task sa eseguire.
+///
+/// Ogni variante porta con se' il canale su cui rispondere: chi manda il
+/// comando resta in attesa su quel canale.
 enum Command {
     CreateUser {
         username: String,
@@ -98,40 +93,38 @@ enum Command {
     },
 }
 
-/// Da qui si parla con il database. E' clonabile: ogni sessione ne tiene
-/// una copia, e tutte finiscono nella stessa coda.
+/// Da qui si parla con il database.
+///
+/// Clonabile: ogni sessione ne tiene una copia e tutte scrivono nella stessa coda.
 #[derive(Clone)]
 pub struct StorageHandle {
     tx: mpsc::Sender<Command>,
 }
 
 impl StorageHandle {
-    /// Apre il database, applica lo schema e avvia l'attore.
+    /// Apre il database, applica lo schema e avvia il task che lo possiede.
     ///
-    /// L'apertura e lo schema avvengono qui, sul thread del chiamante: e'
-    /// un'operazione bloccante ma accade una volta sola all'avvio, prima che
-    /// il server accetti connessioni.
+    /// L'apertura blocca il thread del chiamante, ma avviene una volta sola
+    /// all'avvio, prima che il server accetti connessioni.
     pub fn spawn(db_path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(db_path)?;
 
-        // Lo schema e' incorporato nel binario (lib.rs) e usa CREATE TABLE
-        // IF NOT EXISTS: applicarlo a ogni avvio e' innocuo su un database
-        // gia' popolato, ed evita un passo di installazione separato.
+        // Lo schema usa CREATE TABLE IF NOT EXISTS: riapplicarlo a ogni avvio
+        // e' innocuo su un database gia' popolato, e risparmia un passo di
+        // installazione separato.
         conn.execute_batch(crate::SCHEMA)?;
 
         let (tx, mut rx) = mpsc::channel::<Command>(CODA);
 
-        // spawn_blocking, NON spawn: dentro si chiama rusqlite, che blocca.
-        // Su un task normale bloccherebbe un thread del runtime e con esso
-        // ogni altro task assegnato a quel thread.
+        // Pool dei lavori bloccanti e non un task normale: qui dentro si
+        // chiama SQLite, che blocca il thread su cui gira.
         tokio::task::spawn_blocking(move || {
-            // blocking_recv e non recv().await: qui non siamo in un contesto
-            // asincrono, siamo su un thread del pool bloccante.
+            // Ricezione bloccante: questo non e' un contesto asincrono.
             while let Some(cmd) = rx.blocking_recv() {
                 esegui(&conn, cmd);
             }
-            // Si esce quando tutti i mittenti sono stati distrutti, cioe'
-            // quando il server si spegne. La connessione si chiude qui.
+            // Si esce quando tutti i mittenti sono spariti, cioe' allo
+            // spegnimento del server: la connessione si chiude qui.
             tracing::info!("attore storage terminato");
         });
 
@@ -167,7 +160,7 @@ impl StorageHandle {
         rx.await?
     }
 
-    /// Restituisce un vettore di FixedPositions, necessario per l'analisi e la creazione del report di movimento
+    /// Le posizioni registrate dall'utente nel periodo indicato.
     pub async fn positions_for(
         &self,
         user: UserId,
@@ -179,7 +172,7 @@ impl StorageHandle {
         rx.await?
     }
 
-    /// Restituisce un vettore di StateInterval, necessario per l'analisi e la creazione del report di movimento
+    /// Gli intervalli di stato dell'utente che toccano il periodo indicato.
     pub async fn intervals_for(
         &self,
         user: UserId,
@@ -275,9 +268,8 @@ impl StorageHandle {
 
     /// Mette un comando in coda.
     ///
-    /// Fallisce solo se l'attore non c'e' piu': succede allo spegnimento, ed e'
-    /// meglio un errore leggibile che un unwrap che fa cadere una sessione
-    /// senza spiegazione.
+    /// Fallisce solo se il task del database non c'e' piu', cioe' allo
+    /// spegnimento: meglio un errore leggibile che una sessione che cade.
     async fn invia(&self, cmd: Command) -> anyhow::Result<()> {
         self.tx
             .send(cmd)
@@ -286,11 +278,10 @@ impl StorageHandle {
     }
 }
 
-/// Esegue un comando. Gira sul thread bloccante, quindi puo' chiamare
-/// rusqlite liberamente.
+/// Esegue un comando: gira sul thread bloccante, quindi puo' usare SQLite.
 ///
-/// Se chi ha chiesto se n'e' andato nel frattempo, il send sul oneshot
-/// fallisce: non e' un errore, e' una sessione che ha chiuso. Si ignora.
+/// Se chi ha chiesto se n'e' andato nel frattempo la risposta non arriva a
+/// destinazione: non e' un errore, e' una sessione che ha chiuso.
 fn esegui(conn: &Connection, cmd: Command) {
     match cmd {
         Command::CreateUser {
@@ -348,12 +339,12 @@ fn esegui(conn: &Connection, cmd: Command) {
     }
 }
 
-/// Inserisce un utente e restituisce l'id assegnato da SQLite.
+/// Inserisce un utente e restituisce l'identificativo assegnato dal database.
 ///
 /// Il rifiuto dei nomi gia' presi non e' scritto qui: lo impone l'indice UNIQUE
-/// su `username` nello schema. Il vincolo sta in un posto solo, e vale anche per
-/// due registrazioni simultanee — cosa che un controllo "esiste gia'?" seguito
-/// da un inserimento non garantirebbe.
+/// dello schema. Cosi' il vincolo sta in un posto solo e regge anche a due
+/// registrazioni simultanee, cosa che un controllo seguito da un inserimento
+/// non garantirebbe.
 fn crea_utente(
     conn: &Connection,
     username: &str,
@@ -373,8 +364,8 @@ fn crea_utente(
 
     match esito {
         Ok(_) => Ok(UserId(conn.last_insert_rowid())),
-        // Tradotto in un messaggio comprensibile: il chiamante lo rigira al
-        // client come "username gia' in uso".
+        // Violazione del vincolo UNIQUE: tradotta in un errore riconoscibile,
+        // che il chiamante rigira al client come nome gia' in uso.
         Err(rusqlite::Error::SqliteFailure(e, _))
             if e.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
@@ -384,7 +375,7 @@ fn crea_utente(
     }
 }
 
-/// Cerca un utente e ne restituisce id, hash della password e ruolo.
+/// Cerca un utente per nome.
 fn trova_utente(conn: &Connection, username: &str) -> anyhow::Result<Option<Utente>> {
     let esito = conn.query_row(
         "SELECT id, password_hash, role FROM users WHERE username = ?1",
@@ -400,13 +391,13 @@ fn trova_utente(conn: &Connection, username: &str) -> anyhow::Result<Option<Uten
 
     match esito {
         Ok(v) => Ok(Some(v)),
-        // "Non esiste" non e' un errore: e' una risposta valida alla domanda.
+        // Nessuna riga non e' un errore: e' una risposta valida.
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
 
-/// Restituisce le posizioni assunte dall'utente all'interno del range specificato
+/// Legge le posizioni dell'utente comprese nel periodo, in ordine di tempo.
 fn posizioni_per(
     conn: &Connection,
     user: UserId,
@@ -436,7 +427,10 @@ fn posizioni_per(
     Ok(output)
 }
 
-/// Restituisce gli intervalli di tempo registrati dall'utente nel range specificato.
+/// Legge gli intervalli di stato che si sovrappongono al periodo.
+///
+/// Include quelli ancora aperti, cioe' senza istante di fine: il taglio preciso
+/// agli estremi lo fa poi l'analisi.
 fn intervalli_per(
     conn: &Connection,
     user: UserId,
@@ -481,7 +475,7 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 8, 20, h, 0, 0).unwrap()
     }
 
-    /// Un DB in memoria con lo schema applicato e un utente (id 1).
+    /// Database in memoria con lo schema applicato e un utente di prova.
     fn db_con_utente() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(crate::SCHEMA).unwrap();
@@ -509,10 +503,11 @@ mod tests {
             .unwrap();
         }
 
-        let range = TimeRange::new(utc(10), utc(20)); // [10:00, 20:00)
+        // Periodo dalle 10 alle 20, estremo finale escluso.
+        let range = TimeRange::new(utc(10), utc(20));
         let pos = posizioni_per(&conn, UserId(1), range).unwrap();
 
-        // La posizione delle 23:00 e' fuori dal range.
+        // Quella delle 23 resta fuori.
         assert_eq!(pos.len(), 2);
         assert_eq!(pos[0].at, utc(11));
         assert_eq!(pos[1].at, utc(12));
@@ -521,21 +516,21 @@ mod tests {
     #[test]
     fn test_intervalli_per_include_sovrapposti_e_aperti() {
         let conn = db_con_utente();
-        // Chiuso dentro il range.
+        // Chiuso e tutto dentro il periodo.
         conn.execute(
             "INSERT INTO state_intervals (user_id, state, start_at, end_at)
              VALUES (1, 'moving', ?1, ?2)",
             (utc(11).to_rfc3339(), utc(12).to_rfc3339()),
         )
         .unwrap();
-        // Aperto (end NULL): si sovrappone al range.
+        // Ancora aperto: si sovrappone al periodo e va incluso.
         conn.execute(
             "INSERT INTO state_intervals (user_id, state, start_at, end_at)
              VALUES (1, 'stopped', ?1, NULL)",
             [utc(12).to_rfc3339()],
         )
         .unwrap();
-        // Interamente prima del range: deve essere escluso.
+        // Interamente precedente: va escluso.
         conn.execute(
             "INSERT INTO state_intervals (user_id, state, start_at, end_at)
              VALUES (1, 'moving', ?1, ?2)",
@@ -549,14 +544,15 @@ mod tests {
         assert_eq!(iv.len(), 2);
         assert_eq!(iv[0].state, UserState::Moving);
         assert_eq!(iv[1].state, UserState::Stopped);
-        assert_eq!(iv[1].end, None); // l'intervallo aperto resta aperto
+        // L'intervallo aperto resta tale anche dopo la lettura.
+        assert_eq!(iv[1].end, None);
     }
 }
 
 /// Inserisce una posizione nello storico.
 ///
-/// Gli istanti vanno in ISO 8601 UTC, lo stesso formato che `posizioni_per` si
-/// aspetta di rileggere: le due funzioni vanno tenute d'accordo.
+/// Gli istanti si scrivono in ISO 8601 UTC, lo stesso formato che la lettura si
+/// aspetta: le due funzioni vanno tenute d'accordo.
 fn salva_posizione(
     conn: &Connection,
     user: UserId,
@@ -572,13 +568,11 @@ fn salva_posizione(
 
 /// Chiude l'intervallo aperto dell'utente e ne apre uno nuovo, entrambi a `at`.
 ///
-/// Le due istruzioni stanno in una TRANSAZIONE perche' devono valere insieme:
-/// se passasse solo la chiusura, l'utente resterebbe senza intervallo aperto e
-/// il suo stato successivo diventerebbe irrecuperabile; se passasse solo
-/// l'apertura, l'indice unico dello schema rifiuterebbe il secondo aperto.
+/// Le due istruzioni stanno in una transazione perche' valgono solo insieme:
+/// con la sola chiusura l'utente resterebbe senza intervallo aperto, con la
+/// sola apertura l'indice dello schema rifiuterebbe il secondo.
 ///
-/// Chiudere zero intervalli e' normale: succede al primo login di un utente,
-/// che non ne ha ancora nessuno.
+/// Non chiudere niente e' normale: succede al primo accesso di un utente.
 fn applica_transizione(
     conn: &Connection,
     user: UserId,
@@ -601,13 +595,12 @@ fn applica_transizione(
     Ok(())
 }
 
-/// Chiude tutti gli intervalli rimasti aperti, e restituisce quanti erano.
+/// Chiude tutti gli intervalli rimasti aperti e restituisce quanti erano.
 ///
-/// Serve dopo un arresto anomalo: se il server muore mentre dieci camionisti
-/// sono collegati, restano dieci intervalli senza fine, e ogni analisi
-/// successiva li conterebbe fino a "adesso". Si chiudono all'istante di avvio:
-/// non sappiamo quando il server sia morto davvero, e questa e' la scelta
-/// conservativa piu' semplice da spiegare.
+/// Serve dopo un arresto anomalo: se il server muore con dieci camionisti
+/// collegati restano dieci intervalli senza fine, e ogni analisi successiva li
+/// conterebbe fino a adesso. Si chiudono all'istante di avvio, perche' quando
+/// il server sia morto davvero non lo sappiamo.
 fn chiudi_intervalli_pendenti(conn: &Connection, at: DateTime<Utc>) -> anyhow::Result<usize> {
     let n = conn.execute(
         "UPDATE state_intervals SET end_at = ?1 WHERE end_at IS NULL",
@@ -639,14 +632,14 @@ fn salva_messaggio(
     Ok(())
 }
 
-/// Legge i messaggi arretrati di un utente e li marca come consegnati.
+/// Legge i messaggi arretrati di un utente e li segna come consegnati.
 ///
-/// Le due operazioni stanno in una TRANSAZIONE: se la marcatura fallisse dopo
-/// la lettura, al login successivo l'utente riceverebbe di nuovo gli stessi
-/// messaggi. Meglio non consegnarli affatto che consegnarli due volte.
+/// Le due operazioni stanno in una transazione: se la marcatura fallisse dopo
+/// la lettura, al collegamento successivo arriverebbero di nuovo gli stessi
+/// messaggi. Meglio non consegnarli che consegnarli due volte.
 ///
-/// I broadcast sono esclusi: `to_user_id IS NULL` significa "a tutti quelli
-/// collegati in quel momento", e chi era assente non li deve recuperare.
+/// Gli annunci restano fuori: un destinatario assente significa "a tutti i
+/// collegati in quel momento", e chi non c'era non li deve recuperare.
 fn ritira_arretrati(
     conn: &Connection,
     user: UserId,

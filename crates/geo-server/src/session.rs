@@ -1,8 +1,9 @@
-//! Ogni connessione accettata dal server diventa qui un task a se' stante:
-//! `handle` fa l'handshake, poi smista verso `trucker_loop` o `admin_loop` a
-//! seconda del ruolo dichiarato. I due cicli leggono un messaggio alla volta e
-//! rispondono, appoggiandosi a `storage` per il database e a `registry` per
-//! sapere e aggiornare chi e' collegato — non fanno mai questo lavoro da soli.
+//! La conversazione con un singolo collegato.
+//!
+//! `handle` fa la presentazione iniziale, poi passa a `trucker_loop` o
+//! `admin_loop` secondo il ruolo dichiarato. I due cicli leggono un messaggio
+//! alla volta e rispondono, appoggiandosi a `storage` per il database e a
+//! `registry` per sapere chi e' collegato.
 
 use crate::auth;
 use crate::registry::Registry;
@@ -22,11 +23,10 @@ use tokio_util::sync::CancellationToken;
 
 type Wire = Framed<TcpStream, LengthDelimitedCodec>;
 
-/// Quanto si attende il primo frame prima di chiudere.
+/// Quanto si aspetta il primo messaggio prima di chiudere la connessione.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-// Gestisce una singola connessione fino alla sua chiusura.
-// Funzione chiamata in lib, per ogni connessione accettata
+/// Segue una connessione dalla presentazione fino alla chiusura.
 pub async fn handle(
     stream: TcpStream,
     shutdown: CancellationToken,
@@ -36,19 +36,19 @@ pub async fn handle(
     let peer = stream.peer_addr()?;
     let mut wire = Framed::new(stream, frame_codec());
 
-    //Chiamata alla funzione handshake
+    // Presentazione: se non arriva o non e' valida si chiude qui.
     let Some(hello) = handshake(&mut wire).await? else {
         return Ok(());
     };
 
     tracing::info!(%peer, role = ?hello.role, "handshake completato");
 
-    // Chi si e' autenticato su questa connessione. Vive qui e non dentro il
-    // ciclo perche' serve anche DOPO, per la chiusura ordinata.
+    // Chi si e' autenticato su questa connessione. Sta qui e non nel ciclo
+    // perche' serve anche dopo, per la chiusura ordinata.
     let mut sessione: Option<(UserId, String)> = None;
 
-    // Il ruolo dichiarato nell'handshake decide come vanno letti tutti i frame
-    // successivi: gli stessi byte sono un ClientMessage o un AdminMessage.
+    // Il ruolo decide come vanno letti tutti i messaggi successivi: gli stessi
+    // byte significano cose diverse per un camionista e per un coordinatore.
     let esito = match hello.role {
         Role::Trucker => {
             trucker_loop(&mut wire, &shutdown, &storage, &registry, &mut sessione).await
@@ -83,7 +83,7 @@ async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
 
     let hello: Hello = decode(&frame[..])?;
 
-    // Controllo sulla struttura Hello
+    // Versioni diverse leggerebbero gli stessi byte in modo diverso.
     if hello.protocol_version != PROTOCOL_VERSION {
         tracing::warn!(
             richiesta = hello.protocol_version,
@@ -98,7 +98,7 @@ async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
         return Ok(None);
     }
 
-    // Messaggio di Welcome in base al ruolo
+    // Il benvenuto va scritto nella forma che il destinatario sa leggere.
     match hello.role {
         Role::Trucker => {
             send(
@@ -123,10 +123,13 @@ async fn handshake(wire: &mut Wire) -> anyhow::Result<Option<Hello>> {
     Ok(Some(hello))
 }
 
-/// Hash contro cui verificare quando l'utente non esiste.
+/// Impronta finta contro cui verificare quando l'utente non esiste.
+///
+/// Serve a far durare uguale il rifiuto, cosi' il tempo di risposta non
+/// distingue un nome sbagliato da una password sbagliata.
 const PHC_FITTIZIO: &str = "$argon2id$v=19$m=19456,t=2,p=1$mPPAx9/sJgdFwPpOmZkZzQ$RW7w1/7mKTOGp6CFI7okMaRciTuid7mzwPmOJuhtQRI";
 
-/// Dialogo con un camionista, fino alla disconnessione o alla chiusura del server.
+/// Dialogo con un camionista, fino alla disconnessione o alla chiusura.
 async fn trucker_loop(
     wire: &mut Wire,
     shutdown: &CancellationToken,
@@ -134,27 +137,22 @@ async fn trucker_loop(
     registry: &Registry,
     autenticato: &mut Option<(UserId, String)>,
 ) -> anyhow::Result<()> {
-    // Le due vie da cui possono arrivare messaggi DAL SERVER verso questo
-    // camionista. Restano vuote finche' non fa login: prima di allora nessuno
-    // sa a chi scrivere.
-    //
-    //   posta   -> messaggi diretti a lui solo
-    //   annunci -> messaggi mandati a tutta la flotta
+    // Le due vie da cui il server puo' scrivere a questo camionista: la sua
+    // casella personale e il canale degli annunci. Restano vuote finche' non
+    // si autentica, perche' prima nessuno sa a chi scrivere.
     let mut posta: Option<mpsc::Receiver<ServerMessage>> = None;
     let mut annunci: Option<broadcast::Receiver<ServerMessage>> = None;
 
     loop {
-        // Il frame si estrae qui
-        // Quattro cose possono succedere, e si aspettano tutte insieme: qui il
-        // task dorme finche' non ne accade una.
+        // Quattro cose possono succedere e si aspettano tutte insieme: il task
+        // dorme finche' non ne accade una.
         //
-        // I due rami delle caselle usano `pending()` quando la casella non
-        // esiste ancora (prima del login): e' un'attesa che non finisce mai,
-        // quindi quel ramo semplicemente non puo' mai vincere.
+        // Quando una casella non esiste ancora si aspetta su `pending()`, che
+        // non finisce mai: quel ramo non puo' vincere finche' non c'e' login.
         let frame = tokio::select! {
             _ = shutdown.cancelled() => break,
 
-            // 1. Un messaggio DIRETTO a questo camionista.
+            // Messaggio diretto a questo camionista.
             msg = async {
                 match posta.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -163,15 +161,14 @@ async fn trucker_loop(
             } => {
                 match msg {
                     Some(m) => send(wire, &m).await?,
-                    // La casella si e' chiusa: succede se il registro ha
-                    // sostituito questa voce con un altro login dello stesso
-                    // utente. Questa sessione non deve piu' ricevere.
+                    // Casella chiusa: il registro ha sostituito questa voce
+                    // con un altro accesso dello stesso utente.
                     None => posta = None,
                 }
                 continue;
             }
 
-            // 2. Un annuncio a tutta la flotta.
+            // Annuncio diretto a tutta la flotta.
             msg = async {
                 match annunci.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -180,9 +177,8 @@ async fn trucker_loop(
             } => {
                 match msg {
                     Ok(m) => send(wire, &m).await?,
-                    // Questa sessione era troppo lenta e ha perso qualche
-                    // annuncio: si registra e si continua. Un annuncio vale
-                    // adesso, non ha senso recuperarlo dopo.
+                    // Sessione troppo lenta: qualche annuncio e' andato perso.
+                    // Vale adesso, non ha senso recuperarlo dopo.
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(persi = n, "annunci persi per lentezza");
                     }
@@ -191,20 +187,20 @@ async fn trucker_loop(
                 continue;
             }
 
-            // 3. Un messaggio dal client.
+            // Messaggio in arrivo dal client.
             frame = wire.next() => match frame {
-                // Nessun frame: il client ha chiuso la connessione.
+                // Niente da leggere: il client ha chiuso.
                 None => break,
                 Some(frame) => frame?,
             },
         };
 
         match decode::<ClientMessage>(&frame[..])? {
-            //Registrazione
+            // Creazione di un nuovo account.
             ClientMessage::Register { username, password } => {
-                // Prima dell'hash, non dopo: Argon2 costa una trentina di
-                // millisecondi di CPU pura, e una registrazione destinata a
-                // essere rifiutata non deve farli pagare al server.
+                // Prima del calcolo dell'impronta, non dopo: costa una
+                // trentina di millisecondi che una registrazione da rifiutare
+                // non deve far pagare al server.
                 if let Err(motivo) = auth::valida_credenziali(&username, &password) {
                     tracing::warn!(%username, %motivo, "registrazione rifiutata");
                     send(
@@ -247,9 +243,9 @@ async fn trucker_loop(
                     }
                 }
             }
-            //Login
+            // Accesso di un utente gia' registrato.
             ClientMessage::Login { username, password } => {
-                //Già autenticato
+                // Un secondo accesso sulla stessa connessione non ha senso.
                 if autenticato.is_some() {
                     send(
                         wire,
@@ -262,8 +258,7 @@ async fn trucker_loop(
                     continue;
                 }
 
-                // Al camionista il ruolo non interessa: gli basta esistere e
-                // sapere la propria password.
+                // Qui il ruolo non serve: basta esistere e sapere la password.
                 let (utente, phc) = match storage.find_user(&username).await? {
                     Some((u, p, _ruolo)) => (Some(u), p),
                     None => (None, PHC_FITTIZIO.to_string()),
@@ -273,16 +268,16 @@ async fn trucker_loop(
                 match (utente, corretta) {
                     (Some(user), true) => {
                         tracing::info!(%username, %user, "login effettuato");
-                        // Da qui in poi questa sessione puo' RICEVERE: il
-                        // registro consegna le due estremita' di lettura, e i
-                        // rami 1 e 2 del select! smettono di essere inerti.
+                        // Da qui la sessione puo' anche ricevere: il registro
+                        // consegna le due estremita' di lettura, e i primi due
+                        // rami dell'attesa smettono di essere inerti.
                         let (rx_posta, rx_annunci) = registry.register(user, username.clone());
                         posta = Some(rx_posta);
                         annunci = Some(rx_annunci);
 
-                        // SCONNESSO -> FERMO. La transizione va scritta subito:
-                        // e' l'apertura del primo intervallo di questa sessione,
-                        // e senza di essa le analisi avrebbero un buco.
+                        // Da sconnesso a fermo. Va scritta subito: apre il
+                        // primo intervallo della sessione, e senza le analisi
+                        // avrebbero un buco.
                         let ora = Utc::now();
                         if let Some(t) = registry.on_login(user, ora) {
                             storage.apply_transition(user, t.to, t.at).await?;
@@ -291,11 +286,10 @@ async fn trucker_loop(
                         *autenticato = Some((user, username.clone()));
                         send(wire, &ServerMessage::LoginOk { user, username }).await?;
 
-                        // Coda offline: i messaggi diretti arrivati mentre non
-                        // era collegato gli vengono consegnati adesso, in
-                        // ordine di invio. Vengono marcati come consegnati
-                        // dentro la stessa transazione che li legge, quindi al
-                        // prossimo login non ricompaiono.
+                        // Arretrati: i messaggi ricevuti mentre non era
+                        // collegato arrivano adesso, in ordine di invio. La
+                        // lettura li segna anche come consegnati, quindi al
+                        // collegamento successivo non ricompaiono.
                         for (text, at) in storage.take_pending(user).await? {
                             send(
                                 wire,
@@ -308,7 +302,7 @@ async fn trucker_loop(
                             .await?;
                         }
                     }
-                    // Stesso identico messaggio nei due casi: non si rivela se sia
+                    // Stesso messaggio in entrambi i casi: non si rivela se sia
                     // l'utente a non esistere o la password a essere sbagliata.
                     _ => {
                         tracing::warn!(%username, "login rifiutato");
@@ -330,7 +324,8 @@ async fn trucker_loop(
                     continue;
                 };
 
-                // Una coordinata assurda non deve entrare nello storico
+                // Una coordinata assurda non deve entrare nello storico: da li'
+                // in poi falserebbe distanze e velocita'.
                 if !position.is_valid() {
                     send(
                         wire,
@@ -346,7 +341,8 @@ async fn trucker_loop(
                 tracing::debug!(%user, %at, lat = position.lat, lon = position.lon, "posizione");
                 storage.save_position(user, at, position).await?;
 
-                // La macchina a stati decide se questa posizione e' un cambio.
+                // La macchina a stati decide se questa posizione e' un cambio,
+                // e nel caso restituisce la transizione da salvare.
                 if let Some(t) = registry.on_position(user, at, position) {
                     storage.apply_transition(user, t.to, t.at).await?;
                 }
@@ -360,9 +356,8 @@ async fn trucker_loop(
                     send(wire, &non_autenticato()).await?;
                     continue;
                 };
-                // Il messaggio va a chi sta guardando la console. Viaggia gia'
-                // nella forma che l'amministratore sa leggere, con dentro il
-                // nome di chi scrive: la console non deve andarselo a cercare.
+                // Va a chi sta guardando la console, gia' nella forma che
+                // questa sa leggere e con dentro il nome di chi scrive.
                 let ora = Utc::now();
                 let letto_da = registry.verso_admin(AdminReply::Chat {
                     from: *user,
@@ -370,8 +365,7 @@ async fn trucker_loop(
                     text: text.clone(),
                     at: ora,
                 });
-                // Salvato comunque, anche se nessun amministratore era
-                // collegato: lo storico della chat non dipende da chi stava
+                // Salvato comunque: lo storico non dipende da chi stava
                 // guardando in quel momento.
                 storage
                     .save_message(Some(*user), None, &text, ora, letto_da > 0)
@@ -387,26 +381,25 @@ async fn trucker_loop(
     Ok(())
 }
 
-/// Dialogo con l'amministratore.
+/// Dialogo con il coordinatore, fino alla chiusura.
 async fn admin_loop(
     wire: &mut Wire,
     shutdown: &CancellationToken,
     storage: &StorageHandle,
     registry: &Registry,
 ) -> anyhow::Result<()> {
-    // L'amministratore ascolta cio' che i camionisti scrivono.
+    // Si iscrive a cio' che i camionisti scrivono.
     let mut dai_camionisti = registry.subscribe_admin();
 
-    // Chi si e' autenticato su questa connessione. Come per il camionista,
-    // resta None finche' non arriva un login valido: dichiararsi
-    // amministratore nell'handshake non basta, va dimostrato.
+    // Resta vuoto finche' non arriva un accesso valido: dichiararsi
+    // coordinatore nella presentazione non basta, va dimostrato.
     let mut autenticato: Option<UserId> = None;
 
     loop {
         let frame = tokio::select! {
             _ = shutdown.cancelled() => break,
 
-            // Un messaggio scritto da un camionista, da mostrare in console.
+            // Un camionista ha scritto: il messaggio va mostrato in console.
             msg = dai_camionisti.recv() => {
                 match msg {
                     Ok(m) => send(wire, &m).await?,
@@ -438,29 +431,26 @@ async fn admin_loop(
                     continue;
                 }
 
-                // Stessa difesa del login camionista: si verifica sempre una
-                // password, anche quando l'utente non esiste, cosi' il tempo di
-                // risposta non rivela chi e' registrato e chi no.
+                // Si verifica una password anche quando l'utente non esiste,
+                // cosi' il tempo di risposta non rivela chi e' registrato.
                 let (utente, phc, ruolo) = match storage.find_user(&username).await? {
                     Some((u, p, r)) => (Some(u), p, r),
                     None => (None, PHC_FITTIZIO.to_string(), String::new()),
                 };
                 let corretta = auth::verify_password_async(password, phc).await;
 
-                // Tre condizioni, non due: l'utente deve esistere, la password
-                // deve essere giusta, e il ruolo deve essere quello di
-                // amministratore. Senza l'ultima, un camionista che dichiara
-                // Role::Admin nell'handshake entrerebbe con le proprie
-                // credenziali e vedrebbe l'intera flotta.
+                // Tre condizioni e non due: l'utente esiste, la password e'
+                // giusta, e il ruolo e' quello di coordinatore. Senza l'ultima,
+                // un camionista che si dichiarasse tale entrerebbe con le
+                // proprie credenziali e vedrebbe l'intera flotta.
                 match (utente, corretta, ruolo.as_str()) {
                     (Some(user), true, "admin") => {
                         tracing::info!(%username, %user, "login amministratore");
                         autenticato = Some(user);
                         send(wire, &AdminReply::LoginOk { user, username }).await?;
                     }
-                    // Un solo messaggio per tutti e tre i motivi di rifiuto:
-                    // non si rivela se l'utente non esista, se la password sia
-                    // sbagliata o se manchi il permesso.
+                    // Un solo messaggio per tutti e tre i rifiuti: non si
+                    // rivela quale delle tre condizioni sia mancata.
                     _ => {
                         tracing::warn!(%username, %ruolo, "login amministratore rifiutato");
                         send(
@@ -487,8 +477,8 @@ async fn admin_loop(
                 )
                 .await?;
             }
-            // risolve il periodo, estrae dal database intervalli e
-            // posizioni, chiama la creazione del repor e lo rispedisce.
+            // Risolve il periodo, legge intervalli e posizioni dal database,
+            // costruisce il resoconto e lo rimanda indietro.
             AdminMessage::Query { user, spec } => {
                 if autenticato.is_none() {
                     send(wire, &admin_non_autenticato()).await?;
@@ -510,10 +500,9 @@ async fn admin_loop(
                     continue;
                 }
                 let ora = Utc::now();
-                // `send_to` restituisce false se il camionista non e' collegato
-                // oppure se la sua casella e' piena. Non e' un errore del
-                // server: e' l'informazione che serve per decidere se mettere
-                // il messaggio in coda per il prossimo login.
+                // Falso se il camionista non e' collegato o se la sua casella
+                // e' piena: non e' un errore, e' cio' che serve per decidere se
+                // metterlo in coda.
                 let consegnato = registry.send_to(
                     to,
                     ServerMessage::Chat {
@@ -522,8 +511,8 @@ async fn admin_loop(
                         at: ora,
                     },
                 );
-                // Se non e' stato consegnato resta in coda con delivered = 0,
-                // e il destinatario lo ricevera' al prossimo login.
+                // Se non e' stato consegnato resta in coda e il destinatario lo
+                // ricevera' al collegamento successivo.
                 storage
                     .save_message(None, Some(to), &text, ora, consegnato)
                     .await?;
@@ -535,16 +524,15 @@ async fn admin_loop(
                     continue;
                 }
                 let ora = Utc::now();
-                // Un annuncio va ai camionisti COLLEGATI in questo momento:
-                // e' cio' che dice la specifica. Zero destinatari non e' un
-                // errore, significa flotta vuota.
+                // Un annuncio va solo a chi e' collegato adesso. Zero
+                // destinatari non e' un errore, significa flotta vuota.
                 let destinatari = registry.annuncia(ServerMessage::Chat {
                     text: text.clone(),
                     broadcast: true,
                     at: ora,
                 });
-                // Un annuncio si salva sempre come gia' consegnato: vale per
-                // chi c'era, e chi era assente non lo deve recuperare dopo.
+                // Si salva come gia' consegnato: chi era assente non lo deve
+                // recuperare dopo.
                 storage.save_message(None, None, &text, ora, true).await?;
                 tracing::info!(%text, destinatari, "annuncio a tutta la flotta");
             }
@@ -556,7 +544,7 @@ async fn admin_loop(
     Ok(())
 }
 
-/// Invia un errore nella forma che il destinatario sa leggere.
+/// Manda un errore nella forma che il destinatario sa leggere.
 async fn reply_error(
     wire: &mut Wire,
     role: Role,
@@ -569,13 +557,13 @@ async fn reply_error(
     }
 }
 
-/// Serializza un messaggio e lo scrive come un frame solo.
+/// Serializza un messaggio e lo scrive preceduto dalla sua lunghezza.
 async fn send<T: serde::Serialize>(wire: &mut Wire, msg: &T) -> anyhow::Result<()> {
     wire.send(encode(msg)?.into()).await?;
     Ok(())
 }
 
-/// L'errore restituito a chi manda messaggi prima di aver fatto login.
+/// Risposta a chi manda messaggi prima di essersi autenticato.
 fn non_autenticato() -> ServerMessage {
     ServerMessage::Error {
         code: ErrorCode::NotAuthenticated,
@@ -583,7 +571,7 @@ fn non_autenticato() -> ServerMessage {
     }
 }
 
-/// L'errore per un amministratore che agisce prima di aver fatto login.
+/// Risposta a un coordinatore che agisce prima di essersi autenticato.
 fn admin_non_autenticato() -> AdminReply {
     AdminReply::Error {
         code: ErrorCode::NotAuthenticated,
