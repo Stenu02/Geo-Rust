@@ -1,16 +1,13 @@
 //! I messaggi che viaggiano sul filo.
-//!
-//! QUESTO FILE VA SCRITTO COMPLETO NELLA FASE COMUNE, e poi cambiato il meno possibile.
-//! Motivo: aggiungere una variante a un enum di dominio non disturba nessuno, ma
-//! aggiungere un campo a un messaggio rompe tre crate e richiede una riunione.
-//! Se dovete modificarlo, avvisate gli altri tre.
+
 
 use chrono::{DateTime, Utc};
 use geo_core::{MovementReport, Position, RangeSpec, UserId, UserState};
 use serde::{Deserialize, Serialize};
 
-/// Incrementare a ogni modifica incompatibile. Il server rifiuta versioni diverse:
-/// meglio un errore chiaro all'handshake che byte interpretati male a meta' demo.
+/// Cambia a ogni modifica incompatibile dei messaggi. Il server rifiuta le
+/// versioni diverse dalla propria, cosi' l'errore emerge subito all'apertura
+/// invece che a byte gia' interpretati male.
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Ruolo dichiarato all'apertura della connessione
@@ -99,7 +96,7 @@ pub enum AdminMessage {
         username: String,
         password: String,
     },
-    /// Stato corrente della flotta (visualizzazione real-time: opzionale ma utile)
+    /// Stato corrente della flotta
     ListFleet,
     /// Il calcolo avviene sul server
     Query {
@@ -111,7 +108,7 @@ pub enum AdminMessage {
         to: UserId,
         text: String,
     },
-    /// Messaggio a tutti i camionisti CONNESSI
+    /// Messaggio a tutti i camionisti connessi
     SendBroadcast {
         text: String,
     },

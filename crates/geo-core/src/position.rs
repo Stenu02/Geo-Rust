@@ -33,9 +33,8 @@ impl Position {
         Self { lat, lon }
     }
 
-    /// Vero se le due coordinate vanno considerate DIVERSE.
-    ///
-    /// Non usare `==`: vedi COORD_EPSILON_DEG.
+    /// Vero se le due coordinate vanno considerate diverse.
+
     pub fn differs_from(&self, other: &Position) -> bool {
         (self.lat - other.lat).abs() > COORD_EPSILON_DEG
             || (self.lon - other.lon).abs() > COORD_EPSILON_DEG

@@ -1,11 +1,3 @@
-//! Periodi di analisi programmabili.
-//!
-//! DECISIONI DA DOCUMENTARE NEL REPORT:
-//! - fuso orario locale (non UTC): "giorno corrente" è un concetto locale.
-//!   Gli istanti restano in UTC internamente, la conversione avviene solo qui.
-//! - settimana ISO: da lunedì a domenica
-//! - mese: mese di calendario
-//! - check in caso di cambiamento ora legale / ora solare: nei giorni di cambio un "giorno" dura 23 o 25 ore
 
 use chrono::{DateTime, Duration, Utc, Datelike, Months, TimeZone, NaiveDate};
 use serde::{Deserialize, Serialize};

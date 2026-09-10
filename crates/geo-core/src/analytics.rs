@@ -34,7 +34,7 @@ pub struct MovementReport {
     pub moving_time: Duration,
     /// Tempo totale nello stato FERMO.
     pub paused_time: Duration,
-    /// Tempo totale nello stato SCONNESSO. Riportato a parte: NON è una pausa.
+    /// Tempo totale nello stato SCONNESSO. Riportato a parte: non è una pausa.
     /// Serve anche alla verifica di quadratura (vedi `interval::total_in`).
     pub disconnected_time: Duration,
 
@@ -44,7 +44,7 @@ pub struct MovementReport {
 
 /// Calcola il report per un utente su un periodo.
 ///
-/// Precondizioni attese: `intervals` e `positions` riguardano UN SOLO utente e sono
+/// Precondizioni attese: `intervals` e `positions` riguardano un solo utente e sono
 /// gia' filtrati grossolanamente sul periodo dalla query SQL. Il troncamento rispetto
 /// agli estremi avviene qui, tramite `StateInterval::clip_to`.
 pub fn analyze(

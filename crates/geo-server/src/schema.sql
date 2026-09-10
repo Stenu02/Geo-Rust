@@ -1,10 +1,5 @@
 -- Schema del database.
---
--- Incorporato nel binario con include_str!: non c'e' nessun file da distribuire
--- accanto all'eseguibile, che si romperebbe al primo spostamento del binario.
---
--- Cambiarlo dopo significa toccare insieme storage.rs, le query delle analisi
--- e lo script di popolamento: conviene che nasca completo.
+
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;

@@ -1,12 +1,8 @@
 //! Macchina a stati dell'utente.
 //!
-//! ```text
-//! SCONNESSO --login--> FERMO --cambio coordinata--> IN MOVIMENTO
-//!     ^                  ^                                |
-//!     |                  +---- 3 min senza cambiare -------+
-//!     |
-//!     +---- disconnessione (da qualsiasi stato)
-//! ```
+//! Si parte sconnessi. L'accesso porta a fermo; il primo cambio di coordinata
+//! porta in movimento; tre minuti senza cambiamenti riportano a fermo. La
+//! disconnessione riporta a sconnesso da qualsiasi stato.
 
 use crate::position::Position;
 use chrono::{DateTime, Utc};
@@ -64,7 +60,7 @@ pub struct Transition {
 pub struct StateMachine {
     state: UserState,
     last_position: Option<Position>,
-    /// Istante dell'ultimo cambiamento EFFETTIVO di coordinata.
+    /// Istante dell'ultimo cambiamento effettivo di coordinata.
     last_change_at: Option<DateTime<Utc>>,
 }
 
@@ -89,7 +85,7 @@ impl StateMachine {
     /// Imposta il nuovo stato e restituisce la transizione corrispondente.
     ///
     /// Si occupa di centralizzare la manutenzione dei campi in caso di cambio di stato.
-    /// Vien usato nei quattro metodi `on_*`, i quali passano due parametri:
+    /// Viene usato nei quattro metodi `on_*`, i quali passano due parametri:
     /// (lo stato in cui passare, l'istante in cui si verifica il cambiamento)
     /// Il parametro `at` è passato esplicitamente perche' non è sempre `now`: `on_tick` chiude
     /// il movimento a `last_change_at + soglia`.
@@ -115,7 +111,7 @@ impl StateMachine {
     /// Posizione ricevuta dal client.
     ///
     /// Casi da gestire:
-    /// - PRIMA posizione dopo il login: non è un "cambio", non fa scattare il movimento
+    /// - prima posizione dopo il login: non è un "cambio", non fa scattare il movimento
     /// - coordinata diversa dalla precedente: FERMO -> IN MOVIMENTO, e in ogni caso
     ///   aggiorna `last_change_at`
     /// - coordinata uguale: nessuna transizione qui (il compito è delegato a `on_tick`)
@@ -157,7 +153,7 @@ impl StateMachine {
     /// Se lo stato e' IN MOVIMENTO e sono passati almeno `STOP_THRESHOLD_SECS`
     /// dall'ultimo cambio di coordinata, transita a FERMO.
     ///
-    /// L'istante della transizione DEVE essere `last_change_at + soglia`, non `now`:
+    /// L'istante della transizione deve essere `last_change_at + soglia`, non `now`:
     /// altrimenti la durata del movimento risulta piu' lunga del dovuto di quanto è
     /// fine il tick, e i totali delle durate non tornano.
     pub fn on_tick(&mut self, now: DateTime<Utc>) -> Option<Transition> {
@@ -197,8 +193,8 @@ mod tests {
     use super::*;
     use crate::stop_threshold;
     use chrono::{Duration, TimeZone};
-    
-    
+
+
     fn t(offset_secs: i64) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 20, 12, 0, 0).unwrap() + Duration::seconds(offset_secs)
     }
@@ -274,7 +270,7 @@ mod tests {
         // esattamente alla soglia: transizione a FERMO
         let tr = sm.on_tick(t(60) + stop_threshold()).unwrap();
         assert_eq!(tr.to, UserState::Stopped);
-        // l'istante e' last_change_at + soglia, NON `now`
+        // l'istante e' last_change_at + soglia, non `now`
         assert_eq!(tr.at, t(60) + stop_threshold());
     }
 
@@ -290,11 +286,11 @@ mod tests {
         assert!(sm.on_position(t(120), Position::new(45.002, 7.0)).is_none());
         assert_eq!(sm.state(), UserState::Moving);
 
-        // 3 min dopo il PRIMO cambio ma solo 2 dopo l'ultimo: ancora IN MOVIMENTO
+        // 3 min dopo il primo cambio ma solo 2 dopo l'ultimo: ancora IN MOVIMENTO
         assert!(sm.on_tick(t(60) + stop_threshold()).is_none());
         assert_eq!(sm.state(), UserState::Moving);
 
-        // 3 min dopo l'ULTIMO cambio: ora si ferma, a last_change_at + soglia
+        // 3 min dopo l'ultimo cambio: ora si ferma, a last_change_at + soglia
         let tr = sm.on_tick(t(120) + stop_threshold()).unwrap();
         assert_eq!(tr.to, UserState::Stopped);
         assert_eq!(tr.at, t(120) + stop_threshold());
