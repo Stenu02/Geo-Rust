@@ -2,6 +2,7 @@
 //!
 //! Il calcolo avviene qui ed è invocato dal server: `geo-admin` riceve un
 //! `MovementReport` già pronto e si limita a mostrarlo.
+//! Requisiti Funzionali rispettati: RF8, RF9, RF10
 
 use crate::interval::{total_in, StateInterval};
 use crate::position::{FixedPosition, UserId};

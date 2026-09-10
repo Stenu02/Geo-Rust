@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Rappresenta un periodo continuo durante il quale un utente è rimasto in un certo stato.
 ///
 /// `end == None` significa "intervallo ancora aperto" (lo stato corrente).
+/// Requisiti funzionali rispettati: RF10, RF11.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StateInterval {
     pub state: UserState,

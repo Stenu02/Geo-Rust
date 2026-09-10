@@ -1,4 +1,5 @@
-//! Calcoli geografici. Scritti a mano per evitare una dipendenza: sono ~15 righe.
+//! Calcolo della distanza tra due punti geografici.
+//! Requisiti funzionali rispettati: RF8
 
 use crate::position::Position;
 

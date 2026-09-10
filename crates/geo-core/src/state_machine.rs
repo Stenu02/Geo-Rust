@@ -3,6 +3,7 @@
 //! Si parte sconnessi. L'accesso porta a fermo; il primo cambio di coordinata
 //! porta in movimento; tre minuti senza cambiamenti riportano a fermo. La
 //! disconnessione riporta a sconnesso da qualsiasi stato.
+//! Requisiti Funzionali rispettati: RF5, RF6, RF7
 
 use crate::position::Position;
 use chrono::{DateTime, Utc};
