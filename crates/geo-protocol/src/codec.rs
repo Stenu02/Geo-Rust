@@ -32,7 +32,7 @@ pub fn frame_codec() -> LengthDelimitedCodec {
 
 /// Serializza un messaggio in MessagePack.
 ///
-/// MessagePack invece di JSON: piu' compatto sul filo e nel binario (R18).
+/// MessagePack invece di JSON: piu' compatto sul filo e nel binario.
 /// Se in fase di sviluppo volete leggere il traffico, sostituite temporaneamente
 /// con `serde_json` — le firme non cambiano.
 pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
@@ -89,7 +89,7 @@ mod tests {
             ClientMessage::PositionUpdate { at, position } => {
                 assert_eq!(at, istante);
                 // I gradi decimali devono sopravvivere esatti: un arrotondamento
-                // farebbe scattare o mancare la soglia di R6.
+                // farebbe scattare o mancare la soglia di movimento.
                 assert_eq!(position.lat, 45.0618513);
                 assert_eq!(position.lon, 7.6797161);
             }

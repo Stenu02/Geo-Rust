@@ -1,4 +1,4 @@
-//! Macchina a stati dell'utente (R5, R6, R7).
+//! Macchina a stati dell'utente.
 //!
 //! ```text
 //! SCONNESSO --login--> FERMO --cambio coordinata--> IN MOVIMENTO
@@ -24,7 +24,7 @@ pub enum UserState {
 }
 
 impl UserState {
-    /// Vero solo per `Stopped`. Usato dalle analisi per la "durata delle pause" (R10).
+    /// Vero solo per `Stopped`. Usato dalle analisi per la "durata delle pause".
     pub fn counts_as_pause(&self) -> bool {
         matches!(self, UserState::Stopped)
     }
@@ -92,7 +92,7 @@ impl StateMachine {
     /// Vien usato nei quattro metodi `on_*`, i quali passano due parametri:
     /// (lo stato in cui passare, l'istante in cui si verifica il cambiamento)
     /// Il parametro `at` è passato esplicitamente perche' non è sempre `now`: `on_tick` chiude
-    /// il movimento a `last_change_at + soglia` (R7).
+    /// il movimento a `last_change_at + soglia`.
     fn transition_to(&mut self, to: UserState, at: DateTime<Utc>) -> Transition {
         let from = self.state;
         self.state = to;
@@ -112,10 +112,10 @@ impl StateMachine {
         Some(self.transition_to(UserState::Stopped, now))
     }
 
-    /// Posizione ricevuta dal client (R4).
+    /// Posizione ricevuta dal client.
     ///
     /// Casi da gestire:
-    /// - PRIMA posizione dopo il login: non è un "cambio", non fa scattare R6
+    /// - PRIMA posizione dopo il login: non è un "cambio", non fa scattare il movimento
     /// - coordinata diversa dalla precedente: FERMO -> IN MOVIMENTO, e in ogni caso
     ///   aggiorna `last_change_at`
     /// - coordinata uguale: nessuna transizione qui (il compito è delegato a `on_tick`)
@@ -152,14 +152,14 @@ impl StateMachine {
         }
     }
 
-    /// Valutazione periodica (R7). Chiamata dal server a intervalli regolari.
+    /// Valutazione periodica. Chiamata dal server a intervalli regolari.
     ///
     /// Se lo stato e' IN MOVIMENTO e sono passati almeno `STOP_THRESHOLD_SECS`
     /// dall'ultimo cambio di coordinata, transita a FERMO.
     ///
     /// L'istante della transizione DEVE essere `last_change_at + soglia`, non `now`:
     /// altrimenti la durata del movimento risulta piu' lunga del dovuto di quanto è
-    /// fine il tick, e i totali di R10 non tornano.
+    /// fine il tick, e i totali delle durate non tornano.
     pub fn on_tick(&mut self, now: DateTime<Utc>) -> Option<Transition> {
         if self.state != UserState::Moving {
             return None;
@@ -245,7 +245,7 @@ mod tests {
         let mut sm = StateMachine::new();
         sm.on_login(t(0));
 
-        // R6: la prima posizione dopo il login non e' un "cambio"
+        // La prima posizione dopo il login non e' un "cambio"
         assert!(sm.on_position(t(30), Position::new(45.0, 7.0)).is_none());
         assert_eq!(sm.state(), UserState::Stopped);
 
@@ -274,13 +274,13 @@ mod tests {
         // esattamente alla soglia: transizione a FERMO
         let tr = sm.on_tick(t(60) + stop_threshold()).unwrap();
         assert_eq!(tr.to, UserState::Stopped);
-        // l'istante e' last_change_at + soglia, NON `now` (R7)
+        // l'istante e' last_change_at + soglia, NON `now`
         assert_eq!(tr.at, t(60) + stop_threshold());
     }
 
     #[test]
     fn test_continued_movement_delays_stop() {
-        // Protegge il refresh del timer di R7: in MOVIMENTO ogni cambio reale riavvia il conteggio.
+        // Protegge il refresh del timer di sosta: in MOVIMENTO ogni cambio reale riavvia il conteggio.
         let mut sm = StateMachine::new();
         sm.on_login(t(0));
         sm.on_position(t(30), Position::new(45.0, 7.0)); // primo fix

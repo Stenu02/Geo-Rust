@@ -14,7 +14,7 @@ impl std::fmt::Display for UserId {
     }
 }
 
-/// Ruolo dell'utente (R12).
+/// Ruolo dell'utente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     Trucker,
@@ -33,7 +33,7 @@ impl Position {
         Self { lat, lon }
     }
 
-    /// Vero se le due coordinate vanno considerate DIVERSE (R6).
+    /// Vero se le due coordinate vanno considerate DIVERSE.
     ///
     /// Non usare `==`: vedi COORD_EPSILON_DEG.
     pub fn differs_from(&self, other: &Position) -> bool {
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn test_differs_from_uses_epsilon() {
         let p = Position::new(45.0, 7.0);
-        // Un cambiamento sotto l'epsilon (~11 cm) non e' una differenza (R6).
+        // Un cambiamento sotto l'epsilon (~11 cm) non e' una differenza.
         assert!(!p.differs_from(&Position::new(45.0 + 1e-9, 7.0)));
         // Uno chiaramente piu' grande si'.
         assert!(p.differs_from(&Position::new(45.001, 7.0)));

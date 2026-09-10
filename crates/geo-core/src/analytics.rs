@@ -1,4 +1,4 @@
-//! Analisi del movimento di un utente su un periodo (R8, R9, R10, R11).
+//! Analisi del movimento di un utente su un periodo.
 //!
 //! Il calcolo avviene qui ed è invocato dal server: `geo-admin` riceve un
 //! `MovementReport` già pronto e si limita a mostrarlo.
@@ -23,13 +23,13 @@ pub struct MovementReport {
     /// La distanza totale percorsa, in chilometri (somma delle tratte, Haversine).
     pub distance_km: f64,
 
-    // --- R9: velocita' media ---
+    // --- velocita' media ---
     /// Distanza / durata del movimento. La velocità "di marcia".
     pub avg_speed_moving_kmh: f64,
     /// Distanza / (movimento + pause). La velocità "complessiva", soste incluse.
     pub avg_speed_overall_kmh: f64,
 
-    // --- R10: durate ---
+    // --- durate ---
     /// Tempo totale nello stato IN MOVIMENTO.
     pub moving_time: Duration,
     /// Tempo totale nello stato FERMO.

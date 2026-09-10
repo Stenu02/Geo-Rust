@@ -1,4 +1,4 @@
-//! Periodi di analisi programmabili (R11).
+//! Periodi di analisi programmabili.
 //!
 //! DECISIONI DA DOCUMENTARE NEL REPORT:
 //! - fuso orario locale (non UTC): "giorno corrente" è un concetto locale.

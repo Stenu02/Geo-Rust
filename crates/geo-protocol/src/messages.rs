@@ -33,22 +33,20 @@ pub struct Hello {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
-    /// R1
     Register {
         username: String,
         password: String,
     },
-    /// R2
     Login {
         username: String,
         password: String,
     },
-    /// R4 — inviato ogni 30 secondi
+    /// Inviato ogni 30 secondi
     PositionUpdate {
         at: DateTime<Utc>,
         position: Position,
     },
-    /// R14 — il camionista scrive all'amministratore
+    /// Il camionista scrive all'amministratore
     Chat {
         text: String,
     },
@@ -78,7 +76,7 @@ pub enum ServerMessage {
     PositionAck {
         state: UserState,
     },
-    /// R13 — messaggio scritto a mano dall'amministratore
+    /// Messaggio scritto a mano dall'amministratore
     Chat {
         text: String,
         broadcast: bool,
@@ -103,17 +101,17 @@ pub enum AdminMessage {
     },
     /// Stato corrente della flotta (visualizzazione real-time: opzionale ma utile)
     ListFleet,
-    /// R8, R9, R10, R11, R12 — il calcolo avviene sul server
+    /// Il calcolo avviene sul server
     Query {
         user: UserId,
         spec: RangeSpec,
     },
-    /// R13 — messaggio a un singolo camionista
+    /// Messaggio a un singolo camionista
     SendDirect {
         to: UserId,
         text: String,
     },
-    /// R13 — messaggio a tutti i camionisti CONNESSI
+    /// Messaggio a tutti i camionisti CONNESSI
     SendBroadcast {
         text: String,
     },
@@ -139,7 +137,7 @@ pub enum AdminReply {
     },
     /// Il report arriva gia' calcolato: l'admin non computa nulla.
     QueryResult(Box<MovementReport>),
-    /// R14 — la risposta di un camionista
+    /// La risposta di un camionista
     Chat {
         from: UserId,
         username: String,
