@@ -8,21 +8,40 @@ use std::time::Duration;
 /// Tempo di CPU del processo su Windows, utente piu' kernel.
 #[cfg(windows)]
 pub fn get_cpu_time() -> anyhow::Result<Duration> {
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
     use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 
     // Servono tutti e quattro anche se ne useremo solo due: la funzione li
     // vuole tutti come parametri in uscita.
-    let mut creation_time = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-    let mut exit_time = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-    let mut kernel_time = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-    let mut user_time = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let mut creation_time = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit_time = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel_time = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user_time = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
 
     // Chiamata al sistema: scrive dentro le quattro strutture qui sopra e
     // restituisce zero in caso di errore.
     unsafe {
         let process = GetCurrentProcess();
-        if GetProcessTimes(process, &mut creation_time, &mut exit_time, &mut kernel_time, &mut user_time) == 0 {
+        if GetProcessTimes(
+            process,
+            &mut creation_time,
+            &mut exit_time,
+            &mut kernel_time,
+            &mut user_time,
+        ) == 0
+        {
             anyhow::bail!("GetProcessTimes fallito");
         }
     }
@@ -66,6 +85,47 @@ pub fn get_cpu_time() -> anyhow::Result<Duration> {
     Ok(Duration::from_secs(total_sec) + Duration::from_micros(total_usec))
 }
 
+/// Legge il file di log e calcola il delta e la media mobile degli ultimi campioni.
+///
+/// * `delta`: Rappresenta il tempo di CPU grezzo consumato (in millisecondi)
+///   esclusivamente durante l'ultimo intervallo di tempo. Serve per capire il
+///   consumo isolato tra una campionatura e l'altra.
+/// * `rolling_average`: E' la media mobile semplice (SMA) dei delta degli ultimi
+///   campioni (fino a 10). Fornisce una visione più morbida e continuativa del
+///   consumo di CPU, utile per identificare trend.
+pub fn calculate_metrics(log_path: &std::path::Path, current_cpu_time_ms: u64) -> (u64, u64) {
+    let mut last_cpu_time = None;
+    let mut deltas = std::vec::Vec::new();
+
+    if let Ok(content) = std::fs::read_to_string(log_path) {
+        for line in content.lines().skip(1) {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() >= 3 {
+                if let Ok(cpu_time) = parts[1].parse::<u64>() {
+                    last_cpu_time = Some(cpu_time);
+                }
+                if let Ok(delta) = parts[2].parse::<u64>() {
+                    deltas.push(delta);
+                    if deltas.len() > 9 {
+                        deltas.remove(0);
+                    }
+                }
+            }
+        }
+    }
+
+    let delta = match last_cpu_time {
+        Some(last) => current_cpu_time_ms.saturating_sub(last),
+        None => 0,
+    };
+
+    deltas.push(delta);
+    let sum: u64 = deltas.iter().sum();
+    let avg = sum / (deltas.len() as u64);
+
+    (delta, avg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +140,11 @@ mod tests {
             std::hint::black_box(1 + 1);
         }
         let t2 = get_cpu_time().unwrap();
-        assert!(t2 >= t1, "Il tempo di CPU deve essere monotono: t2={:?} < t1={:?}", t2, t1);
+        assert!(
+            t2 >= t1,
+            "Il tempo di CPU deve essere monotono: t2={:?} < t1={:?}",
+            t2,
+            t1
+        );
     }
 }

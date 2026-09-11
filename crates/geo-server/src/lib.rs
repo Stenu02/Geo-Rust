@@ -107,9 +107,13 @@ impl Server {
             // Intestazione solo alla creazione: riavviando il server si
             // continua ad accodare sul file esistente.
             if !log_path.exists() {
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                {
                     use std::io::Write;
-                    let _ = writeln!(f, "timestamp,cpu_time_ms");
+                    let _ = writeln!(f, "timestamp,cpu_time_ms,delta_cpu_time_ms,rolling_avg_ms");
                 }
             }
 
@@ -119,10 +123,11 @@ impl Server {
                         // Il file si riapre a ogni campione, cosi' resta
                         // leggibile mentre il server e' in funzione.
                         if let Ok(cpu_dur) = cpu_log::get_cpu_time() {
+                            let (delta, avg) = cpu_log::calculate_metrics(&log_path, cpu_dur.as_millis() as u64);
                             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
                                 use std::io::Write;
                                 let now = chrono::Local::now().to_rfc3339();
-                                let _ = writeln!(f, "{},{}", now, cpu_dur.as_millis());
+                                let _ = writeln!(f, "{},{},{},{}", now, cpu_dur.as_millis(), delta, avg);
                             }
                         }
                     }
