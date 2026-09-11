@@ -1,12 +1,11 @@
 //! Chi e' collegato adesso, e come lo si raggiunge.
 //!
-//! Tiene due cose: la mappa dei camionisti attualmente connessi — che alimenta
-//! la tabella flotta dell'amministratore — e i canali per mandare loro messaggi,
-//! uno personale per ciascuno piu' uno condiviso per gli annunci a tutti.
+//! Tiene la mappa dei camionisti connessi, che alimenta la tabella della
+//! flotta, e i canali per mandare loro messaggi: uno personale per ciascuno
+//! piu' uno condiviso per gli annunci.
 //!
-//! A differenza dello storage qui NON serve un attore: la mappa vive in memoria
-//! e ogni operazione dura microsecondi. Un attore aggiungerebbe due passaggi di
-//! canale per un lavoro piu' breve del passaggio stesso.
+//! Qui non serve un attore come per il database: la mappa vive in memoria e
+//! ogni operazione dura microsecondi, meno del passaggio su un canale.
 
 use chrono::{DateTime, Utc};
 use geo_core::{Position, StateMachine, Transition, UserId, UserState};
@@ -15,13 +14,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
-/// Quanti messaggi possono restare in attesa nella casella di un camionista.
+/// Quanti messaggi restano in attesa nella casella di un camionista.
 const MAILBOX: usize = 32;
 
-/// Quanti annunci il canale broadcast conserva per chi e' momentaneamente
-/// indietro. Chi resta piu' indietro di cosi' perde i messaggi piu' vecchi e
-/// riceve un errore di ritardo: e' il comportamento voluto per un annuncio,
-/// che vale adesso e non fra dieci minuti.
+/// Quanti annunci il canale conserva per chi e' momentaneamente indietro.
+///
+/// Chi resta piu' indietro perde i piu' vecchi: e' il comportamento voluto per
+/// un annuncio, che vale adesso e non fra dieci minuti.
 const BROADCAST: usize = 64;
 
 /// Cosa il server sa di un camionista collegato in questo momento.
@@ -29,34 +28,33 @@ struct Connessa {
     username: String,
     /// Casella personale: da qui passano i messaggi diretti a questo utente.
     mailbox: mpsc::Sender<ServerMessage>,
-    /// La macchina a stati di questo utente. E' l'unica fonte di verita' sul suo
-    /// stato: la tabella flotta lo legge da qui, non da una copia a parte che
-    /// prima o poi divergerebbe.
+    /// Unica fonte di verita' sullo stato: la tabella della flotta lo legge da
+    /// qui, non da una copia che prima o poi divergerebbe.
     fsm: StateMachine,
     last_position: Option<Position>,
     last_update: Option<DateTime<Utc>>,
 }
 
-/// Il registro dei collegati. Clonabile: ogni sessione ne tiene una copia e
-/// tutte vedono la stessa mappa.
+/// Il registro dei collegati.
+///
+/// Clonabile: ogni sessione ne tiene una copia e tutte vedono la stessa mappa.
 #[derive(Clone)]
 pub struct Registry {
     connessi: Arc<Mutex<HashMap<UserId, Connessa>>>,
-    /// Canale verso TUTTI i camionisti collegati: gli annunci dell'amministratore.
+    /// Canale verso tutti i camionisti collegati, per gli annunci.
     annunci: broadcast::Sender<ServerMessage>,
-    /// Canale verso TUTTI gli amministratori collegati.
+    /// Canale verso tutti i coordinatori collegati.
     ///
     /// Serve la direzione opposta: quando un camionista scrive, il messaggio
-    /// deve arrivare a chi sta guardando la console. Gli amministratori non
-    /// stanno nella mappa `connessi` — quella elenca la flotta, e un
-    /// amministratore non e' un veicolo — quindi hanno un canale a se'.
+    /// deve arrivare a chi guarda la console. I coordinatori non stanno nella
+    /// mappa `connessi`, che elenca la flotta, quindi hanno un canale a se'.
     verso_admin: broadcast::Sender<AdminReply>,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        // Il secondo valore restituito da `channel` e' un ricevitore che qui
-        // non serve: ognuno si iscrivera' per conto suo con `subscribe()`.
+        // Il ricevitore restituito da `channel` non serve: ognuno si iscrive
+        // per conto suo con `subscribe`.
         let (annunci, _) = broadcast::channel(BROADCAST);
         let (verso_admin, _) = broadcast::channel(BROADCAST);
         Self {
@@ -66,31 +64,29 @@ impl Registry {
         }
     }
 
-    /// Iscrive una sessione amministratore al canale dei messaggi in arrivo.
+    /// Iscrive una sessione del coordinatore ai messaggi in arrivo.
     ///
-    /// A differenza dei camionisti, un amministratore non viene inserito in
-    /// nessuna mappa: non fa parte della flotta e non ha uno stato da tracciare.
-    /// Gli serve solo poter ascoltare.
+    /// Non lo inserisce in nessuna mappa: non fa parte della flotta e non ha
+    /// uno stato da seguire, gli serve solo poter ascoltare.
     pub fn subscribe_admin(&self) -> broadcast::Receiver<AdminReply> {
         self.verso_admin.subscribe()
     }
 
-    /// Recapita un messaggio a tutti gli amministratori collegati.
+    /// Recapita un messaggio a tutti i coordinatori collegati.
     ///
-    /// Restituisce quanti lo riceveranno. Zero significa che in questo momento
-    /// nessuno sta guardando la console: il messaggio va comunque salvato sul
-    /// database, ma nessuno lo vedra' comparire in tempo reale.
+    /// Restituisce quanti lo riceveranno. Zero significa che nessuno sta
+    /// guardando: il messaggio va salvato lo stesso sul database.
     pub fn verso_admin(&self, msg: AdminReply) -> usize {
         self.verso_admin.send(msg).unwrap_or(0)
     }
 
-    /// Segna un utente come collegato e restituisce i due canali da cui la sua
-    /// sessione ricevera' messaggi: la casella personale e gli annunci.
+    /// Segna un utente come collegato.
+    ///
+    /// Restituisce i due canali da cui la sua sessione ricevera': la casella
+    /// personale e gli annunci.
     ///
     /// Se lo stesso utente era gia' collegato altrove, la voce precedente viene
-    /// sostituita: la sua vecchia sessione smettera' di ricevere. E' la scelta
-    /// piu' semplice e va documentata; l'alternativa sarebbe rifiutare il secondo
-    /// login o consegnare a entrambe.
+    /// sostituita e la vecchia sessione smette di ricevere.
     pub fn register(
         &self,
         user: UserId,
@@ -103,7 +99,7 @@ impl Registry {
         let voce = Connessa {
             username,
             mailbox,
-            // Nasce SCONNESSA: e' `on_login` a portarla a FERMO, e a produrre la
+            // Nasce sconnessa: e' `on_login` a portarla a fermo e a produrre la
             // transizione che il chiamante scrivera' sul database.
             fsm: StateMachine::new(),
             last_position: None,
@@ -113,23 +109,25 @@ impl Registry {
         (posta, self.annunci.subscribe())
     }
 
-    /// Toglie un utente dai collegati. Va chiamata anche quando la sessione
-    /// termina con un errore, altrimenti la tabella flotta mostra fantasmi.
+    /// Toglie un utente dai collegati.
+    ///
+    /// Va chiamata anche quando la sessione finisce con un errore, altrimenti
+    /// la tabella della flotta mostra fantasmi.
     pub fn unregister(&self, user: UserId) {
         self.blocca().remove(&user);
     }
 
-    /// Login: porta la macchina a FERMO e restituisce la transizione.
+    /// Accesso effettuato: porta la macchina a fermo.
     ///
     /// I metodi che seguono hanno tutti la stessa forma: prendono il lucchetto,
     /// mutano la macchina a stati, restituiscono la transizione e rilasciano.
-    /// NON scrivono sul database — non possono, perche' dentro un lucchetto non
-    /// si puo' aspettare. E' il chiamante a persistere, a lucchetto rilasciato.
+    /// Non scrivono sul database, perche' dentro un lucchetto non si puo'
+    /// aspettare: a salvare e' il chiamante, a lucchetto gia' rilasciato.
     pub fn on_login(&self, user: UserId, now: DateTime<Utc>) -> Option<Transition> {
         self.blocca().get_mut(&user)?.fsm.on_login(now)
     }
 
-    /// Posizione ricevuta: puo' far scattare FERMO -> IN MOVIMENTO.
+    /// Posizione ricevuta: puo' far passare da fermo a in movimento.
     pub fn on_position(
         &self,
         user: UserId,
@@ -138,21 +136,23 @@ impl Registry {
     ) -> Option<Transition> {
         let mut mappa = self.blocca();
         let voce = mappa.get_mut(&user)?;
+        // Questi due servono alla tabella della flotta, la macchina a stati
+        // tiene i suoi per conto proprio.
         voce.last_position = Some(position);
         voce.last_update = Some(now);
         voce.fsm.on_position(now, position)
     }
 
-    /// Disconnessione: chiude lo stato corrente e passa a SCONNESSO.
+    /// Disconnessione: chiude lo stato corrente e passa a sconnesso.
     pub fn on_disconnect(&self, user: UserId, now: DateTime<Utc>) -> Option<Transition> {
         self.blocca().get_mut(&user)?.fsm.on_disconnect(now)
     }
 
-    /// Valuta tutti i collegati e raccoglie le transizioni scattate.
+    /// Rivaluta tutti i collegati e raccoglie le transizioni scattate.
     ///
-    /// E' qui che i tre minuti di inattivita' diventano un passaggio a FERMO.
-    /// Il lucchetto resta preso per tutta l'iterazione, ma sono microsecondi e
-    /// non c'e' nessuna attesa dentro: le scritture le fa l'evaluator dopo.
+    /// E' qui che i tre minuti di inattivita' diventano un passaggio a fermo.
+    /// Il lucchetto resta preso per tutta la scansione, ma sono microsecondi e
+    /// non c'e' nessuna attesa dentro.
     pub fn tick_all(&self, now: DateTime<Utc>) -> Vec<(UserId, Transition)> {
         self.blocca()
             .iter_mut()
@@ -162,13 +162,13 @@ impl Registry {
 
     /// Lo stato corrente di un utente collegato.
     ///
-    /// Serve a rispondere `PositionAck`: la verita' sullo stato sta sul server,
-    /// il client la mostra e basta.
+    /// Serve a rispondere al client: la verita' sullo stato sta sul server, il
+    /// client la mostra e basta.
     pub fn state_of(&self, user: UserId) -> Option<UserState> {
         Some(self.blocca().get(&user)?.fsm.state())
     }
 
-    /// La fotografia della flotta da mandare all'amministratore.
+    /// La fotografia della flotta da mandare al coordinatore.
     pub fn fleet(&self) -> Vec<FleetEntry> {
         let mut righe: Vec<FleetEntry> = self
             .blocca()
@@ -181,8 +181,8 @@ impl Registry {
                 last_update: v.last_update,
             })
             .collect();
-        // Ordine stabile: senza, la tabella dell'amministratore si rimescola a
-        // ogni aggiornamento, perche' HashMap non garantisce un ordine.
+        // Ordine stabile: la mappa non ne garantisce uno, e senza questo la
+        // tabella si rimescolerebbe a ogni aggiornamento.
         righe.sort_by_key(|r| r.user);
         righe
     }
@@ -190,8 +190,8 @@ impl Registry {
     /// Recapita un messaggio a un singolo camionista collegato.
     ///
     /// Restituisce `false` se non e' collegato o se la sua casella e' piena.
-    /// Non e' un errore del server: e' informazione che il chiamante puo' usare
-    /// per decidere se mettere il messaggio in coda per il prossimo login.
+    /// Non e' un errore: e' l'informazione che serve al chiamante per decidere
+    /// se mettere il messaggio in coda per il prossimo accesso.
     pub fn send_to(&self, user: UserId, msg: ServerMessage) -> bool {
         match self.blocca().get(&user) {
             Some(voce) => voce.mailbox.try_send(msg).is_ok(),
@@ -201,8 +201,8 @@ impl Registry {
 
     /// Manda un annuncio a tutti i camionisti collegati.
     ///
-    /// Restituisce quanti lo riceveranno. Zero non e' un errore: significa che
-    /// in questo momento non c'e' nessuno collegato.
+    /// Restituisce quanti lo riceveranno. Zero non e' un errore: vuol dire che
+    /// non c'e' nessuno collegato.
     pub fn annuncia(&self, msg: ServerMessage) -> usize {
         self.annunci.send(msg).unwrap_or(0)
     }
@@ -214,14 +214,12 @@ impl Registry {
 
     /// Prende il lucchetto sulla mappa.
     ///
-    /// E' un `std::sync::Mutex` e non quello di tokio: quello di tokio serve solo
-    /// se il lucchetto va tenuto attraverso un `.await`, ed e' piu' costoso. Qui
-    /// ogni sezione critica e' "prendi, tocca la mappa, rilascia" — nessuna
-    /// attesa dentro. La regola da non violare mai e' proprio quella.
+    /// E' un mutex normale e non quello di tokio: quello serve solo se il
+    /// lucchetto va tenuto attraverso un `.await`, ed e' piu' costoso. Qui ogni
+    /// sezione critica e' prendi, tocca la mappa, rilascia.
     ///
-    /// `unwrap` sul lock avvelenato: se un altro thread e' andato in panic mentre
-    /// teneva il lucchetto, la mappa potrebbe essere incoerente e proseguire
-    /// sarebbe peggio che fermarsi.
+    /// Se un altro thread e' andato in panic mentre lo teneva, la mappa
+    /// potrebbe essere incoerente: fermarsi e' meglio che proseguire.
     fn blocca(&self) -> std::sync::MutexGuard<'_, HashMap<UserId, Connessa>> {
         self.connessi
             .lock()
@@ -248,8 +246,7 @@ mod tests {
         let flotta = reg.fleet();
         assert_eq!(flotta.len(), 1);
         assert_eq!(flotta[0].username, "camion01");
-        // Registrato ma non ancora autenticato: la macchina nasce SCONNESSA,
-        // e' `on_login` a portarla a FERMO.
+        // Registrato ma non ancora autenticato: la macchina nasce sconnessa.
         assert_eq!(flotta[0].state, UserState::Disconnected);
         assert_eq!(flotta[0].last_position, None);
     }
@@ -267,7 +264,6 @@ mod tests {
     fn il_login_porta_a_fermo() {
         let reg = Registry::new();
         let _ = reg.register(UserId(1), "camion01".into());
-        // Prima del login la macchina e' sconnessa.
         assert_eq!(reg.fleet()[0].state, UserState::Disconnected);
 
         let t = reg.on_login(UserId(1), Utc::now()).expect("transizione");
@@ -282,13 +278,13 @@ mod tests {
         let t0 = Utc::now();
         reg.on_login(UserId(1), t0);
 
-        // La prima posizione non e' un "cambio".
+        // La prima posizione dopo l'accesso non e' un cambio.
         assert!(reg
             .on_position(UserId(1), t0, Position::new(45.0, 7.0))
             .is_none());
         assert_eq!(reg.fleet()[0].state, UserState::Stopped);
 
-        // La seconda, diversa, lo e'.
+        // La seconda, diversa dalla prima, lo e'.
         let t = reg
             .on_position(
                 UserId(1),
@@ -298,6 +294,7 @@ mod tests {
             .expect("transizione");
         assert_eq!(t.to, UserState::Moving);
 
+        // La tabella della flotta riporta stato e ultima posizione aggiornati.
         let riga = &reg.fleet()[0];
         assert_eq!(riga.state, UserState::Moving);
         assert_eq!(riga.last_position, Some(Position::new(45.1, 7.0)));
@@ -317,10 +314,10 @@ mod tests {
         );
         assert_eq!(reg.fleet()[0].state, UserState::Moving);
 
-        // Un tick troppo presto non fa nulla.
+        // Prima della soglia non scatta niente.
         assert!(reg.tick_all(t0 + Duration::seconds(60)).is_empty());
 
-        // Uno dopo la soglia si'.
+        // Dopo la soglia, contata dall'ultimo cambio, si'.
         let scattate = reg.tick_all(t0 + Duration::seconds(30 + 181));
         assert_eq!(scattate.len(), 1);
         assert_eq!(scattate[0].1.to, UserState::Stopped);
@@ -329,7 +326,7 @@ mod tests {
 
     #[test]
     fn eventi_su_un_utente_non_collegato_non_esplodono() {
-        // Puo' capitare: un tick arriva dopo che la sessione si e' chiusa.
+        // Capita davvero: un tick arriva dopo che la sessione si e' chiusa.
         let reg = Registry::new();
         assert!(reg.on_login(UserId(99), Utc::now()).is_none());
         assert!(reg
@@ -341,6 +338,7 @@ mod tests {
 
     #[test]
     fn la_flotta_e_ordinata_in_modo_stabile() {
+        // Inseriti in disordine, devono uscire ordinati per identificativo.
         let reg = Registry::new();
         for id in [3, 1, 2] {
             let _ = reg.register(UserId(id), format!("camion{id:02}"));

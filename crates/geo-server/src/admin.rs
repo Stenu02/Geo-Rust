@@ -1,22 +1,10 @@
-//! Gestione delle interrogazioni dell'amministratore (R12a).
+//! Costruzione del resoconto richiesto dal coordinatore.
 //!
-//! Trasforma un `AdminMessage::Query` in un `MovementReport` gia' pronto.
+//! Il calcolo avviene qui, sul server: la console riceve un resoconto finito e
+//! si limita a mostrarlo.
 //!
-//! IL CALCOLO AVVIENE QUI, non nel client amministratore: il professore e' stato
-//! esplicito ("Devi rendere disponibile una applicazione lato server che fa
-//! interrogazioni"). `geo-admin` riceve un report finito e si limita a mostrarlo.
-//!
-//! Divisione delle responsabilita':
-//! - la lettura dal DB (`storage::positions_for` / `intervals_for`) e' dell'attore
-//!   storage.
-//! - risoluzione del range in session.rs (chiamante)
-//! - AdminHandler si occupa di chiamare `analyze` e di restituire il report generato.
-//!
-//! Il flusso completo e' implementato in `session::admin_loop`, ramo `Query`
-//!
-//! Le due letture di storage filtrano solo grossolanamente sul periodo (posizioni
-//! dentro `[start, end)`, intervalli che si sovrappongono al range); il troncamento
-//! fine agli estremi lo fa poi `analyze` tramite `StateInterval::clip_to`.
+//! Il lavoro e' diviso in tre: `session` risolve il periodo e chiede i dati,
+//! `storage` legge dal database, questo modulo li passa ad `analyze`.
 
 use chrono::{DateTime, Utc};
 use geo_core::analytics::analyze;
@@ -26,12 +14,13 @@ use geo_core::{MovementReport, RangeSpec, StateInterval, TimeRange, UserId};
 pub struct AdminHandler;
 
 impl AdminHandler {
-    /// Costruisce il report per una interrogazione, dal periodo gia' risolto e da
-    /// intervalli e posizioni dell'utente gia' letti dal DB (vedi il flusso sopra).
+    /// Costruisce il resoconto da intervalli e posizioni gia' letti dal database.
     ///
-    /// `range` arriva dal chiamante, che lo ha gia' usato per le letture di storage:
-    /// non viene ricalcolato qui. `now` serve ad `analyze` per chiudere virtualmente
-    /// gli intervalli ancora aperti.
+    /// `range` arriva dal chiamante, che lo ha gia' usato per le letture: non si
+    /// ricalcola. `now` serve a chiudere gli intervalli ancora aperti.
+    ///
+    /// Le letture filtrano il periodo alla grossa; il taglio preciso agli estremi
+    /// lo fa `analyze`.
     pub fn build_report(
         user: UserId,
         spec: RangeSpec,
@@ -51,17 +40,19 @@ mod tests {
     use geo_core::geo_math::haversine_km;
     use geo_core::{Position, Timestamped, UserState};
 
+    /// Un'interrogazione completa: dal periodo risolto fino al resoconto.
     #[test]
     fn test_admin_query_roundtrip() {
-        // Una interrogazione completa dagli input al report: risolve il periodo, poi analizza.
         let now = Utc.with_ymd_and_hms(2026, 8, 20, 12, 0, 0).unwrap();
         let range = TimeRange::resolve(RangeSpec::Today, now);
-        // Ancoriamo i dati dentro il giorno risolto, relativi al suo inizio.
+
+        // Tutti i dati di prova sono ancorati all'inizio del giorno risolto.
         let at = |h: i64| range.start + Duration::hours(h);
 
         let pos1 = Position::new(45.0, 7.0);
         let pos2 = Position::new(45.5, 7.0);
 
+        // Un'ora in movimento seguita da un'ora di sosta.
         let intervals = [
             StateInterval::closed(UserState::Moving, at(2), at(3)),
             StateInterval::closed(UserState::Stopped, at(3), at(4)),
@@ -71,6 +62,7 @@ mod tests {
             Timestamped::new(at(3), Position::new(45.5, 7.0)),
         ];
 
+        // Distanza attesa, calcolata a parte per confrontarla con il resoconto.
         let distance = haversine_km(&pos1, &pos2);
 
         let report = AdminHandler::build_report(
@@ -82,23 +74,23 @@ mod tests {
             now,
         );
 
-        // I metadati della query sono riportati e il periodo e' quello risolto.
+        // Il resoconto riporta utente e periodo della richiesta.
         assert_eq!(report.user, UserId(1));
         assert_eq!(report.spec, RangeSpec::Today);
         assert_eq!(report.range, range);
 
-        // check sui tempi nei diversi stati
+        // Tempi nei tre stati e numero di soste.
         assert_eq!(report.moving_time, Duration::hours(1));
         assert_eq!(report.paused_time, Duration::hours(1));
         assert_eq!(report.disconnected_time, Duration::hours(0));
         assert_eq!(report.pause_count, 1);
 
-        //check sulle posizioni e la distanza percorsa
+        // Le due posizioni entrano nel tragitto e la distanza coincide.
         assert_eq!(report.track.len(), 2);
         assert!(report.distance_km > 0.0);
         assert_eq!(report.distance_km, distance);
 
-        // check sulla distanza complessiva e su quella di marcia
+        // Un'ora ferma su due: la media complessiva e' meta' di quella in marcia.
         assert!((report.avg_speed_overall_kmh - report.avg_speed_moving_kmh / 2.0).abs() < 1e-9);
     }
 }

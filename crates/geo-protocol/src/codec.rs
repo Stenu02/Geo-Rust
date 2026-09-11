@@ -1,9 +1,5 @@
 //! Framing e serializzazione.
-//!
-//! PERCHE' SERVE IL FRAMING: TCP e' un flusso di byte senza confini di messaggio.
-//! Una `write` di 200 byte puo' arrivare come due `read` da 120 e 80, oppure due
-//! messaggi possono arrivare in una sola `read`. Il codec a lunghezza prefissa
-//! risolve il problema una volta sola, e scriverlo a mano e' una fonte di bug inutile.
+
 
 use serde::{de::DeserializeOwned, Serialize};
 use tokio_util::codec::LengthDelimitedCodec;
@@ -32,9 +28,7 @@ pub fn frame_codec() -> LengthDelimitedCodec {
 
 /// Serializza un messaggio in MessagePack.
 ///
-/// MessagePack invece di JSON: piu' compatto sul filo e nel binario (R18).
-/// Se in fase di sviluppo volete leggere il traffico, sostituite temporaneamente
-/// con `serde_json` — le firme non cambiano.
+/// MessagePack invece di JSON: piu' compatto sul filo e nel binario.
 pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
     Ok(rmp_serde::to_vec_named(value)?)
 }
@@ -49,10 +43,7 @@ mod tests {
     use super::*;
     use crate::messages::{ClientMessage, ErrorCode, ServerMessage};
 
-    // ATTENZIONE, ERRORE CLASSICO: `matches!(back, ServerMessage::Error { .. });`
-    // scritto da solo NON verifica niente. `matches!` restituisce un bool, e senza
-    // `assert!` attorno quel valore viene calcolato e scartato. Il test passa sempre.
-    // Serve estrarre i campi e confrontarli davvero.
+
 
     #[test]
     fn roundtrip_preserva_i_campi() {
@@ -89,7 +80,7 @@ mod tests {
             ClientMessage::PositionUpdate { at, position } => {
                 assert_eq!(at, istante);
                 // I gradi decimali devono sopravvivere esatti: un arrotondamento
-                // farebbe scattare o mancare la soglia di R6.
+                // farebbe scattare o mancare la soglia di movimento.
                 assert_eq!(position.lat, 45.0618513);
                 assert_eq!(position.lon, 7.6797161);
             }
@@ -98,8 +89,7 @@ mod tests {
     }
 
     /// Fissa il formato wire: se qualcuno cambia un campo di un messaggio, questo
-    /// test rompe subito invece di lasciare scoprire l'incompatibilita' a runtime,
-    /// magari a meta' demo con server e client compilati in momenti diversi.
+    /// test rompe subito invece di lasciare scoprire l'incompatibilita' a runtime.
     #[test]
     fn formato_wire_stabile() {
         let msg = ClientMessage::Heartbeat;

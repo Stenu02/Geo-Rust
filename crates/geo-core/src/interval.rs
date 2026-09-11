@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Rappresenta un periodo continuo durante il quale un utente è rimasto in un certo stato.
 ///
 /// `end == None` significa "intervallo ancora aperto" (lo stato corrente).
+/// Requisiti funzionali rispettati: RF10, RF11.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StateInterval {
     pub state: UserState,
@@ -45,14 +46,9 @@ impl StateInterval {
     /// Senza troncamento, l'analisi del "giorno corrente" conta anche i 20 minuti che
     /// appartengono al giorno precedente.
     ///
-    /// ```text
-    /// periodo:      [--------- giorno corrente ---------]
-    /// caso A:              [---- movimento ----]            -> tutto
-    /// caso B:  [---movimento---]                            -> solo la parte dentro
-    /// caso C:                            [---movimento---]  -> solo la parte dentro
-    /// caso D:  [------------- movimento -------------]      -> tutto il periodo
-    /// caso E: [--mov--]                                     -> None
-    /// ```
+    /// Un intervallo tutto dentro il periodo torna intero; uno che sborda da un
+    /// lato torna tagliato al confine; uno che copre l'intero periodo torna
+    /// ridotto al periodo; uno del tutto esterno non torna affatto.
     pub fn clip_to(&self, range: &TimeRange, now: DateTime<Utc>) -> Option<StateInterval> {
         let clipped_start = max(self.start, range.start);
         let clipped_end = min(self.effective_end(now), range.end);
@@ -132,7 +128,7 @@ mod tests {
     #[test]
     fn test_clip_case_e_no_overlap() {
         assert!(moving(utc(21, 0), utc(22, 0)).clip_to(&day_range(), utc(23, 0)).is_none());
-        // Toccare esattamente il confine NON è una sovrapposizione (semiaperto, `<` stretto).
+        // Toccare esattamente il confine non è una sovrapposizione (semiaperto, `<` stretto).
         assert!(moving(utc(6, 0), utc(10, 0)).clip_to(&day_range(), utc(23, 0)).is_none());
     }
 

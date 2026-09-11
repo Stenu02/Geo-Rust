@@ -1,16 +1,13 @@
 //! I messaggi che viaggiano sul filo.
-//!
-//! QUESTO FILE VA SCRITTO COMPLETO NELLA FASE COMUNE, e poi cambiato il meno possibile.
-//! Motivo: aggiungere una variante a un enum di dominio non disturba nessuno, ma
-//! aggiungere un campo a un messaggio rompe tre crate e richiede una riunione.
-//! Se dovete modificarlo, avvisate gli altri tre.
+
 
 use chrono::{DateTime, Utc};
 use geo_core::{MovementReport, Position, RangeSpec, UserId, UserState};
 use serde::{Deserialize, Serialize};
 
-/// Incrementare a ogni modifica incompatibile. Il server rifiuta versioni diverse:
-/// meglio un errore chiaro all'handshake che byte interpretati male a meta' demo.
+/// Cambia a ogni modifica incompatibile dei messaggi. Il server rifiuta le
+/// versioni diverse dalla propria, cosi' l'errore emerge subito all'apertura
+/// invece che a byte gia' interpretati male.
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Ruolo dichiarato all'apertura della connessione
@@ -33,22 +30,20 @@ pub struct Hello {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
-    /// R1
     Register {
         username: String,
         password: String,
     },
-    /// R2
     Login {
         username: String,
         password: String,
     },
-    /// R4 — inviato ogni 30 secondi
+    /// Inviato ogni 30 secondi
     PositionUpdate {
         at: DateTime<Utc>,
         position: Position,
     },
-    /// R14 — il camionista scrive all'amministratore
+    /// Il camionista scrive all'amministratore
     Chat {
         text: String,
     },
@@ -78,7 +73,7 @@ pub enum ServerMessage {
     PositionAck {
         state: UserState,
     },
-    /// R13 — messaggio scritto a mano dall'amministratore
+    /// Messaggio scritto a mano dall'amministratore
     Chat {
         text: String,
         broadcast: bool,
@@ -101,19 +96,19 @@ pub enum AdminMessage {
         username: String,
         password: String,
     },
-    /// Stato corrente della flotta (visualizzazione real-time: opzionale ma utile)
+    /// Stato corrente della flotta
     ListFleet,
-    /// R8, R9, R10, R11, R12 — il calcolo avviene sul server
+    /// Il calcolo avviene sul server
     Query {
         user: UserId,
         spec: RangeSpec,
     },
-    /// R13 — messaggio a un singolo camionista
+    /// Messaggio a un singolo camionista
     SendDirect {
         to: UserId,
         text: String,
     },
-    /// R13 — messaggio a tutti i camionisti CONNESSI
+    /// Messaggio a tutti i camionisti connessi
     SendBroadcast {
         text: String,
     },
@@ -139,7 +134,7 @@ pub enum AdminReply {
     },
     /// Il report arriva gia' calcolato: l'admin non computa nulla.
     QueryResult(Box<MovementReport>),
-    /// R14 — la risposta di un camionista
+    /// La risposta di un camionista
     Chat {
         from: UserId,
         username: String,
