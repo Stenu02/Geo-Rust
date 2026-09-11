@@ -134,6 +134,13 @@ impl AppState {
                             let _ = command_tx.try_send(AdminMessage::SendBroadcast {
                                 text: msg.to_string(),
                             });
+                            
+                            let time = chrono::Local::now().format("%H:%M:%S");
+                            let broadcast_text = format!("[Broadcast] {}", msg);
+                            for entry in &self.fleet {
+                                self.chats.entry(entry.user).or_default().push((format!("[{time}] ADMIN"), broadcast_text.clone()));
+                            }
+
                             self.input.clear();
                             self.typing_mode = false;
                             self.cursor_pos = 0;
@@ -215,6 +222,30 @@ impl AppState {
                             user: active_user,
                             spec: RangeSpec::Today
                         });
+                    }
+                }
+                KeyCode::Char('1') | KeyCode::Char('2') | KeyCode::Char('3') => {
+                    if self.selected_tab == 1 {
+                        let active_user = if let Some(rep) = &self.query_report {
+                            Some(rep.user)
+                        } else if !self.fleet.is_empty() {
+                            Some(self.fleet[self.selected_chat_index].user)
+                        } else {
+                            None
+                        };
+
+                        if let Some(user) = active_user {
+                            let spec = match key.code {
+                                KeyCode::Char('1') => RangeSpec::Today,
+                                KeyCode::Char('2') => RangeSpec::CurrentWeek,
+                                KeyCode::Char('3') => RangeSpec::CurrentMonth,
+                                _ => unreachable!(),
+                            };
+                            let _ = command_tx.try_send(AdminMessage::Query {
+                                user,
+                                spec,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -420,13 +451,13 @@ impl AdminUi {
             );
 
             let p = Paragraph::new(text)
-                .block(Block::default().borders(Borders::ALL).title(" Report Analitico "))
+                .block(Block::default().borders(Borders::ALL).title(" Report Analitico (Premi: 1=Oggi, 2=Settimana, 3=Mese) "))
                 .wrap(Wrap { trim: true });
 
             f.render_widget(p, area);
         } else {
             let p = Paragraph::new("Nessun report generato. Seleziona un utente e premi Q nella flotta.")
-                .block(Block::default().borders(Borders::ALL).title(" Report Analitico "));
+                .block(Block::default().borders(Borders::ALL).title(" Report Analitico (Premi: 1=Oggi, 2=Settimana, 3=Mese) "));
             f.render_widget(p, area);
         }
     }
@@ -454,7 +485,7 @@ impl AdminUi {
         // Destra: Chat attiva
         let v_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+            .constraints([Constraint::Min(0), Constraint::Length(4)].as_ref())
             .split(h_chunks[1]);
 
         let mut chat_history = String::new();
@@ -494,7 +525,7 @@ impl AdminUi {
                 input_text_chars.push('█');
             }
         }
-        let input_text = format!("> {}", input_text_chars.into_iter().collect::<String>());
+        let input_text = format!("> {}\n(Comandi speciali: /all <msg>, /report <oggi|settimana|mese>)", input_text_chars.into_iter().collect::<String>());
         let input_title = if self.state.typing_mode {
             " Invia Messaggio (Premi ESC per annullare, Invio per inviare) "
         } else {
@@ -705,5 +736,61 @@ mod tests {
             }
             _ => panic!("Messaggio errato inviato"),
         }
+    }
+
+    /// Testa i tasti 1, 2, 3 nel tab Analisi.
+    #[test]
+    fn test_analisi_time_span_keys() {
+        let (command_tx, mut command_rx) = mpsc::channel::<AdminMessage>(32);
+        let mut state = AppState::new();
+
+        state.fleet.push(FleetEntry {
+            user: UserId(10),
+            username: "truck_10".to_string(),
+            state: geo_core::UserState::Stopped,
+            last_position: None,
+            last_update: None,
+        });
+
+        // In tab 0 i tasti 1,2,3 non devono inviare query
+        state.selected_tab = 0;
+        state.handle_key_event(make_key_event(KeyCode::Char('1')), &command_tx);
+        assert!(command_rx.try_recv().is_err());
+
+        // In tab 1 i tasti 1,2,3 inviano query
+        state.selected_tab = 1;
+
+        state.handle_key_event(make_key_event(KeyCode::Char('1')), &command_tx);
+        match command_rx.try_recv().unwrap() {
+            AdminMessage::Query { user, spec } => {
+                assert_eq!(user, UserId(10));
+                assert_eq!(spec, RangeSpec::Today);
+            }
+            _ => panic!("Messaggio errato"),
+        }
+
+        state.handle_key_event(make_key_event(KeyCode::Char('2')), &command_tx);
+        match command_rx.try_recv().unwrap() {
+            AdminMessage::Query { user, spec } => {
+                assert_eq!(user, UserId(10));
+                assert_eq!(spec, RangeSpec::CurrentWeek);
+            }
+            _ => panic!("Messaggio errato"),
+        }
+
+        state.handle_key_event(make_key_event(KeyCode::Char('3')), &command_tx);
+        match command_rx.try_recv().unwrap() {
+            AdminMessage::Query { user, spec } => {
+                assert_eq!(user, UserId(10));
+                assert_eq!(spec, RangeSpec::CurrentMonth);
+            }
+            _ => panic!("Messaggio errato"),
+        }
+
+        // In typing mode i tasti digitano testo e non inviano query
+        state.typing_mode = true;
+        state.handle_key_event(make_key_event(KeyCode::Char('1')), &command_tx);
+        assert!(command_rx.try_recv().is_err());
+        assert_eq!(state.input, "1");
     }
 }
