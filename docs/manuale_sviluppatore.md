@@ -188,69 +188,9 @@ variabile d'ambiente `GEO_PASS`.
 
 ---
 
-## 5. Le quattro scelte che spiegano il resto
 
-Quasi tutto il codice si capisce meglio conoscendo queste quattro decisioni.
 
-### Un solo task possiede il database
-
-La libreria SQLite che usiamo è **sincrona**: quando la chiami, il thread si
-ferma e aspetta. In un programma asincrono questo è un problema, perché su ogni
-thread girano molti compiti insieme: bloccarne uno significa bloccare tutti
-quelli che gli sono assegnati.
-
-Perciò nessuno tocca il database direttamente. Un solo task possiede la
-connessione e gira su un pool apposito, dove bloccarsi è lecito. Chiunque voglia
-leggere o scrivere gli manda una richiesta su un canale, allegando il canale su
-cui vuole la risposta.
-
-Il prezzo è che le operazioni sul database sono in fila una dietro l'altra. Per
-questo programma va benissimo: sono poche e brevi.
-
-### Il registro si condivide con un lucchetto, mai durante un'attesa
-
-La mappa di chi è collegato è in memoria, condivisa da tutte le sessioni, e
-protetta da un lucchetto. La regola da non violare è che **il lucchetto non si
-tiene mai mentre si aspetta qualcosa**: se una sessione lo prendesse e poi
-aspettasse una scrittura sul database, tutte le altre resterebbero bloccate
-dietro di lei.
-
-Da qui deriva una forma che si ripete in tutto `registry.rs`: i metodi prendono
-il lucchetto, cambiano lo stato, **restituiscono** la transizione avvenuta e
-rilasciano. A salvarla sul database è chi li ha chiamati, quando il lucchetto è
-già libero.
-
-### I messaggi viaggiano preceduti dalla loro lunghezza
-
-TCP è un flusso di byte, non di messaggi. Due invii consecutivi possono arrivare
-attaccati o spezzati a metà, e chi legge non ha modo di sapere dove finisce uno
-e comincia l'altro.
-
-Perciò ogni messaggio viaggia preceduto dal numero di byte che occupa. Il
-contenuto è codificato in MessagePack, un formato binario compatto.
-
-C'è anche un numero di versione, scambiato appena la connessione si apre: se
-client e server sono stati compilati in momenti diversi e non si capirebbero,
-è meglio un errore chiaro subito che byte interpretati male a metà lavoro.
-
-### Le due interfacce prendono il controllo del terminale
-
-Client e console usano una modalità in cui il terminale **non ripete** i tasti
-che premi e in cui il programma disegna l'intero schermo a ogni aggiornamento,
-su una pagina separata da quella della shell.
-
-Non è una scelta estetica. In modalità normale il terminale stampa quello che
-digiti mentre il programma stampa i messaggi in arrivo: le due cose finiscono
-mescolate nella stessa riga. Così invece la riga di scrittura è un riquadro e i
-messaggi ne sono un altro, e non possono sovrapporsi.
-
-Ne discende una regola per chi mette le mani lì: **finché l'interfaccia è
-aperta, niente deve scrivere sul terminale**. Una `println!` aggiunta in un
-punto sbagliato rovina lo schermo.
-
----
-
-## 6. Il database
+## 5. Il database
 
 Un file SQLite, quattro tabelle. Lo schema sta in `schema.sql` ed è incorporato
 nell'eseguibile, quindi al primo avvio le tabelle si creano da sole.
