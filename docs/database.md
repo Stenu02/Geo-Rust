@@ -101,31 +101,8 @@ CREATE TABLE IF NOT EXISTS state_intervals (
 | `start_at` | Inizio dell'intervallo, ISO 8601 UTC. |
 | `end_at` | Fine. **`NULL` significa "ancora in corso"**, cioè lo stato attuale dell'utente. |
 
-### Intervalli, non eventi
 
-La scelta di fondo di questa tabella. Si sarebbe potuto memorizzare *"alle 10:00
-è passato a in movimento"*, *"alle 10:32 è passato a fermo"* — cioè eventi
-singoli. Con gli intervalli si memorizza direttamente `(stato, inizio, fine)`.
 
-La differenza si vede al momento delle analisi: sommare le durate diventa
-immediato, e ritagliare un intervallo sui confini del periodo richiesto è
-banale. Con i soli eventi, ogni interrogazione dovrebbe ricostruire le durate
-appaiando cambi consecutivi, ed è lì che nascono gli errori.
-
-### L'invariante forte
-
-```sql
-CREATE UNIQUE INDEX IF NOT EXISTS idx_intervals_one_open
-    ON state_intervals(user_id) WHERE end_at IS NULL;
-```
-
-Un indice **unico parziale**: si applica soltanto alle righe con `end_at IS NULL`,
-e impone che ce ne sia **al più una per utente**.
-
-Tradotto: un utente non può trovarsi in due stati contemporaneamente. Se il
-codice sbagliasse a chiudere un intervallo prima di aprirne un altro,
-l'inserimento fallirebbe immediatamente — invece di produrre in silenzio numeri
-sbagliati che si scoprirebbero settimane dopo.
 
 
 ### Gli intervalli pendenti dopo un arresto anomalo

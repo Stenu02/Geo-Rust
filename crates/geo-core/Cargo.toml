@@ -3,7 +3,9 @@ name = "geo-core"
 version = "0.1.0"
 edition = "2021"
 
-
+# Solo calcolo: niente rete, file o database, cosi' le regole si provano senza
+# avviare nulla. chrono-tz serve per il fuso orario in cui si calcolano i periodi.
+[dependencies]
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 serde = { workspace = true }
