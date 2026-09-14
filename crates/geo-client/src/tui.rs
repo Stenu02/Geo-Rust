@@ -54,13 +54,11 @@ impl ClientUi {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
         let (key_tx, mut key_rx) = mpsc::channel::<CEvent>(16);
-        std::thread::spawn(move || {
-            loop {
-                if event::poll(Duration::from_millis(100)).unwrap_or(false) {
-                    if let Ok(ev) = event::read() {
-                        if key_tx.blocking_send(ev).is_err() {
-                            break;
-                        }
+        std::thread::spawn(move || loop {
+            if event::poll(Duration::from_millis(100)).unwrap_or(false) {
+                if let Ok(ev) = event::read() {
+                    if key_tx.blocking_send(ev).is_err() {
+                        break;
                     }
                 }
             }
@@ -70,16 +68,19 @@ impl ClientUi {
             terminal.draw(|f| {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(5),
-                        Constraint::Min(10),
-                        Constraint::Length(3)
-                    ].as_ref())
+                    .constraints(
+                        [
+                            Constraint::Length(5),
+                            Constraint::Min(10),
+                            Constraint::Length(3),
+                        ]
+                        .as_ref(),
+                    )
                     .split(f.size());
 
                 let pos_str = self.last_pos.map_or_else(
                     || "In attesa... (usa /pos lat,lon per input manuale)".to_string(),
-                    |p| format!("Lat: {:.5}, Lon: {:.5}", p.lat, p.lon)
+                    |p| format!("Lat: {:.5}, Lon: {:.5}", p.lat, p.lon),
                 );
 
                 let state_str = match self.current_state {
@@ -93,8 +94,10 @@ impl ClientUi {
                     None => String::new(),
                 };
 
-                let status_p = Paragraph::new(format!("Stato: {state_str}.\nPosizione: {pos_str}{update_str}."))
-                    .block(Block::default().title(" Sensore ").borders(Borders::ALL));
+                let status_p = Paragraph::new(format!(
+                    "Stato: {state_str}.\nPosizione: {pos_str}{update_str}."
+                ))
+                .block(Block::default().title(" Sensore ").borders(Borders::ALL));
                 f.render_widget(status_p, chunks[0]);
 
                 // Calcolo scroll per mantenere il focus sugli ultimi messaggi
@@ -123,9 +126,9 @@ impl ClientUi {
                         NetEvent::Connected => self.chat_history.push("[SISTEMA] Connesso al server.".into()),
                         NetEvent::LoggedIn { username } => self.chat_history.push(format!("[SISTEMA] Loggato come {username}.")),
                         NetEvent::ChatReceived { text, broadcast, at } => {
-                            let prefix = if broadcast { "[BROADCAST]" } else { "[DIRETTO]" };
+                            let prefix = if broadcast { "[BROADCAST]" } else { "[DIRETTO]  " };
                             let time = at.with_timezone(&chrono::Local).format("%H:%M:%S");
-                            self.chat_history.push(format!("{prefix} [{time}] Admin: {text}"));
+                            self.chat_history.push(format!("[{time}] {prefix} Admin: {text}"));
                         }
                         // La TUI si adegua passivamente allo stato calcolato dal server
                         NetEvent::PositionAck { state } => self.current_state = state,
@@ -170,7 +173,7 @@ impl ClientUi {
                                     } else {
                                         // Invio risposta in chat
                                         let time = chrono::Local::now().format("%H:%M:%S");
-                                        self.chat_history.push(format!("[{time}] Tu: {msg}"));
+                                        self.chat_history.push(format!("[{time}]             Tu: {msg}"));
                                         let _ = command_tx.send(Command::Chat { text: msg }).await;
                                     }
                                     self.input.clear();
