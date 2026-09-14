@@ -21,7 +21,7 @@ struct Args {
     username: String,
 
     /// Nascosta da --help: la password si digita al prompt. L'argomento resta
-    /// perche' `fleet` deve poterla passare ai client che avvia.
+    /// per gli script, che la passano dall'ambiente con GEO_PASS.
     #[arg(long, env = "GEO_PASS", hide = true)]
     password: Option<String>,
 

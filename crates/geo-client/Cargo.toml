@@ -8,10 +8,6 @@ default-run = "geo-client"
 name = "geo-client"
 path = "src/main.rs"
 
-[[bin]]
-name = "fleet"
-path = "src/bin/fleet.rs"
-
 [features]
 default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm"]
