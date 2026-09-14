@@ -411,7 +411,7 @@ mod tests {
     }
 
     /// All'istante esatto in cui una pausa finisce, il movimento è già ripreso
-    /// (confine [start, end): vedi D-PauseBoundary in docs/decisioni.md).
+   
     #[test]
     fn test_simulator_interpolated_resumes_exactly_at_pause_end() {
         let from = Position::new(45.0, 7.0);

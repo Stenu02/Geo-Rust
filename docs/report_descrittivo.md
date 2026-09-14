@@ -59,7 +59,7 @@ Dentro il server ogni connessione vive in un task asincrono indipendente
 (runtime Tokio); un solo task possiede il database SQLite e gli altri gli
 inviano richieste su un canale; un registro in memoria tiene chi è collegato in
 quel momento con il suo stato. I dettagli sono nel manuale dello sviluppatore,
-sezioni 3 e 5.
+sezione 3.
 
 ---
 
@@ -144,13 +144,14 @@ server è in funzione; se esiste già, si continua ad accodare.
 
 Il sistema è stato compilato e provato per intero su due piattaforme:
 
-| Piattaforma | Versione | Architettura 
-|---|---|---|---|
-| macOS | 26.6 | arm64 (Apple Silicon) | 
-| Windows | *da indicare* | x86-64 | 
-Su entrambe: compilazione in release, avvio di server, autista e console con le tre modalità di movimento, scambio di messaggi
-nelle due direzioni, resoconti, chiusura con Ctrl-C, produzione del log della
-CPU. 
+| Piattaforma | Versione | Architettura |
+|---|---|---|
+| macOS | 26.6 | arm64 (Apple Silicon) |
+| Windows | *da indicare* | x86-64 |
+
+Su entrambe: compilazione in release, avvio di server, autista e console con le
+tre modalità di movimento, scambio di messaggi nelle due direzioni, resoconti,
+chiusura con Ctrl-C, produzione del log della CPU.
 
 L'unico codice che dipende dal sistema operativo è la lettura del tempo di CPU,
 perché non esiste una funzione della libreria standard che la fornisca:
