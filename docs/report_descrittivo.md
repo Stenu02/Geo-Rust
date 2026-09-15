@@ -107,9 +107,9 @@ Compilazione in release con Rust 1.93.1.
 
 | Eseguibile | macOS (arm64) | Windows (x86-64) | macOS con il profilo standard di Cargo, per confronto |
 |---|---|---|---|
-| `geo-server` | 2 012 064 byte (1,92 MiB) | *da misurare* | 6 064 504 byte (5,78 MiB) |
-| `geo-client` | 1 239 872 byte (1,18 MiB) | *da misurare* | 3 230 296 byte (3,08 MiB) |
-| `geo-admin` | 1 139 392 byte (1,09 MiB) | *da misurare* | 2 809 656 byte (2,68 MiB) |
+| `geo-server` | 2 012 064 byte (1,92 MiB) | 2450432 (2,34 MiB) | 6 064 504 byte (5,78 MiB) |
+| `geo-client` | 1 239 872 byte (1,18 MiB) | 1456128 (1,39 MiB) | 3 230 296 byte (3,08 MiB) |
+| `geo-admin` | 1 139 392 byte (1,09 MiB) | 1276928 (1,22 MiB) | 2 809 656 byte (2,68 MiB) |
 
 L'ultima colonna riporta gli stessi programmi compilati con il profilo di
 release predefinito di Cargo. La differenza è dovuta al profilo scelto nel
@@ -147,7 +147,7 @@ Il sistema è stato compilato e provato per intero su due piattaforme:
 | Piattaforma | Versione | Architettura |
 |---|---|---|
 | macOS | 26.6 | arm64 (Apple Silicon) |
-| Windows | *da indicare* | x86-64 |
+| Windows | 11 (10.0.26200) | x86-64 |
 
 Su entrambe: compilazione in release, avvio di server, autista e console con le
 tre modalità di movimento, scambio di messaggi nelle due direzioni, resoconti,

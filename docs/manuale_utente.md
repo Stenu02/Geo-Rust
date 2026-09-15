@@ -20,9 +20,9 @@ digiti.
 
 # Avvio
 
-I passi 1 e 2 si fanno una volta sola. Dal passo 4 in avanti il server deve
+I passi 1 e 2 sono da eseguire una sola volta. Dal passo 4 in avanti il server deve
 essere già avviato. Servono terminali diversi, uno per programma, perché
-ciascuno resta aperto.
+ciascuno rimanga aperto.
 
 ## 1. Compilare
 
@@ -33,8 +33,7 @@ cargo build --release
 Gli eseguibili finiscono in `target/release/`: `geo-server`, `geo-client` e
 `geo-admin`.
 
-Su Windows i comandi sono gli stessi, con l'estensione `.exe` e le barre al
-contrario: `.\target\release\geo-server.exe`.
+Su Windows i comandi sono gli stessi, con l'estensione `.exe` ed i backslash: `.\target\release\geo-server.exe`.
 
 ## 2. Creare l'account del coordinatore
 
@@ -50,7 +49,7 @@ Ripeti la password:
 amministratore 'capoflotta' creato (id 1).
 ```
 
-L'account resta nel file del database e vale anche dopo i riavvii. Gli autisti
+L'account permane nel file del database e vale anche dopo i riavvii. Gli autisti
 invece si registrano da soli, al passo 4.
 
 ## 3. Avviare il server
@@ -164,7 +163,7 @@ sono testo.
 | testo e `Invio` | messaggio all'autista selezionato |
 | `/all buonasera a tutti` | messaggio a tutta la flotta collegata |
 | `/report oggi` · `/report settimana` · `/report mese` | resoconto sul periodo |
-| `←` `→` | sposti il cursore nel testo |
+| `←` `→` | sposta il cursore nel testo |
 | `Esc` | esci dalla scrittura senza inviare |
 
 Il resoconto riporta i chilometri percorsi, la velocità media (calcolata sul
