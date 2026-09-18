@@ -1,7 +1,7 @@
 # Manuale utente
 
 GeoRuggine tiene sotto controllo una flotta di veicoli. Ogni veicolo manda la
-propria posizione al server ogni trenta secondi; il server ricostruisce gli
+propria posizione al server ogni trenta secondi, il server ricostruisce gli
 spostamenti e li conserva, e chi coordina la flotta li consulta e scambia
 messaggi con gli autisti.
 
@@ -107,8 +107,6 @@ Il movimento è simulato e si sceglie come:
 | `--random "45.07,7.68;5"` | si sposta a caso entro cinque chilometri dal punto |
 | nessuna delle tre | resta fermo, e lo si muove a mano |
 
-
-
 Lo schermo si divide in tre riquadri: in alto lo stato e le coordinate attuali,
 al centro la conversazione con la centrale, in basso la riga per scrivere.
 
@@ -193,8 +191,6 @@ Nel database non viene conservata nessuna password, ma solo un'impronta
 calcolata con Argon2. Una password dimenticata non è quindi recuperabile: si
 crea un nuovo account.
 
-
-
 ## Gli stati
 
 Ogni autista si trova sempre in uno di tre stati, e a deciderlo è il server.
@@ -219,5 +215,3 @@ esiste già, il server continua ad accodare.
 | `cpu_time_ms` | tempo di CPU consumato dall'avvio, in millisecondi |
 | `delta_cpu_time_ms` | quanto ne è stato consumato negli ultimi due minuti |
 | `rolling_avg_ms` | media dei delta degli ultimi dieci campioni |
-
-

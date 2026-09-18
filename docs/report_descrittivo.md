@@ -1,7 +1,4 @@
-# GeoRuggine — Report descrittivo
-
-Progetto di Programmazione in Rust, A.A. 2025-2026, gruppo G26:
-Alessandro Demo, Francesco Fontana, Stefano Nuzzo, Leonardo Voghera.
+# GeoRuggine - Report descrittivo
 
 Questo documento descrive cosa è stato realizzato, come è organizzato e con
 quali risultati rispetto ai requisiti della traccia. 
@@ -35,12 +32,12 @@ raggio, o restare fermo e farsi spostare a mano.
 Il codice è un workspace Cargo di sei crate. Tre sono librerie condivise, tre
 sono i programmi.
 
-| Crate | Ruolo | Dipende da |
-|---|---|---|
-| `geo-core` | le regole: stati e transizioni, intervalli di tempo, calcoli sul movimento, validità delle coordinate | — |
-| `geo-protocol` | i messaggi che viaggiano sulla rete e la loro codifica | `geo-core` |
-| `geo-net` | il lato client della connessione: handshake, accesso, riconnessione automatica | `geo-core`, `geo-protocol` |
-| `geo-server` | il server: sessioni, registro dei collegati, database, valutatore degli stati, log della CPU | `geo-core`, `geo-protocol` |
+| Crate | Ruolo | Dipende da                            |
+|---|---|---------------------------------------|
+| `geo-core` | le regole: stati e transizioni, intervalli di tempo, calcoli sul movimento, validità delle coordinate | -                                     |
+| `geo-protocol` | i messaggi che viaggiano sulla rete e la loro codifica | `geo-core`                            |
+| `geo-net` | il lato client della connessione: handshake, accesso, riconnessione automatica | `geo-core`, `geo-protocol`            |
+| `geo-server` | il server: sessioni, registro dei collegati, database, valutatore degli stati, log della CPU | `geo-core`, `geo-protocol`            |
 | `geo-client` | il programma dell'autista: emulazione del movimento e interfaccia a terminale | `geo-core`, `geo-protocol`, `geo-net` |
 | `geo-admin` | la console del coordinatore | `geo-core`, `geo-protocol`, `geo-net` |
 
@@ -135,9 +132,6 @@ entrambi i casi sommando tempo utente e tempo di sistema.
 Il file viene aperto e chiuso a ogni scrittura, così resta leggibile mentre il
 server è in funzione; se esiste già, si continua ad accodare.
 
-
-
-
 ---
 
 ## 5. Portabilità
@@ -159,13 +153,11 @@ perché non esiste una funzione della libreria standard che la fornisca:
 `#[cfg(unix)]` e `#[cfg(windows)]`, e due dipendenze dichiarate solo per la
 piattaforma corrispondente (`libc` e `windows-sys`).
 
-
-
 ---
 
 ## Documenti collegati
 
-- `docs/manuale_utente.md` — installazione, avvio, uso dei tre programmi
-- `docs/manuale_sviluppatore.md` — struttura del codice, flussi principali, scelte di progetto, database
-- `docs/requisiti.md` — testo dei requisiti con le citazioni dalla traccia
-- `docs/database.md` — schema del database
+- `docs/manuale_utente.md` - installazione, avvio, uso dei tre programmi
+- `docs/manuale_sviluppatore.md` - struttura del codice, flussi principali, scelte di progetto, database
+- `docs/requisiti.md` - testo dei requisiti con le citazioni dalla traccia
+- `docs/database.md` - schema del database

@@ -1,11 +1,10 @@
-# GeoRuggine — G26
+# GeoRuggine - G26
+### Progetto di Programmazione in Rust, A.A. 2025-2026
 
-Sistema client/server in Rust per seguire una flotta di veicoli: ogni veicolo
-manda la propria posizione a un server ogni trenta secondi; il server ricostruisce
-gli spostamenti, li conserva e li rende interrogabili; chi coordina la flotta
-osserva lo stato dei veicoli, chiede resoconti e scambia messaggi con gli autisti.
-
-Progetto di Programmazione in Rust, A.A. 2025-2026.
+Sistema client/server in Rust per seguire una flotta di veicoli: 
+- ogni veicolo manda la propria posizione a un server ogni trenta secondi
+- il server ricostruisce gli spostamenti, li conserva e li rende interrogabili
+- chi coordina la flotta osserva lo stato dei veicoli, chiede resoconti e scambia messaggi con gli autisti
 
 ### Membri del gruppo
 
@@ -13,6 +12,8 @@ Progetto di Programmazione in Rust, A.A. 2025-2026.
 - Fontana Francesco s360145
 - Nuzzo Stefano s363651
 - Voghera Leonardo s354375
+
+---
 
 ## Come è organizzato il repository
 
@@ -28,8 +29,10 @@ assets/tracks/    tragitti di esempio per l'emulazione del movimento
 docs/             documentazione (vedi sotto)
 ```
 
-I tre programmi eseguibili sono `geo-server`, `geo-client` e `geo-admin`; gli
+I tre programmi eseguibili sono `geo-server`, `geo-client` e `geo-admin`, gli
 altri tre crate sono librerie condivise.
+
+---
 
 ## Documentazione
 
@@ -41,16 +44,18 @@ altri tre crate sono librerie condivise.
 | [`docs/requisiti.md`](docs/requisiti.md) | i requisiti estratti dalla traccia |
 | [`docs/database.md`](docs/database.md) | lo schema del database |
 
+---
+
 ## Avvio rapido
 
 Serve Rust (la versione è fissata in `rust-toolchain.toml`).
 
 ```bash
 cargo build --release
-./target/release/geo-server --create-admin capoflotta   # una volta sola
+./target/release/geo-server --create-admin capoflotta    # una volta sola
 ./target/release/geo-server                              # terminale 1
 ./target/release/geo-client --username camion01 --register --track assets/tracks/con_pause.csv   # terminale 2
-./target/release/geo-admin --username capoflotta        # terminale 3
+./target/release/geo-admin --username capoflotta         # terminale 3
 ```
 
 Su Windows gli eseguibili hanno estensione `.exe`. La sequenza completa, con

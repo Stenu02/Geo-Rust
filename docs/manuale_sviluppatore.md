@@ -1,7 +1,7 @@
 # Manuale dello sviluppatore
 
 GeoRuggine segue una flotta di veicoli. Ogni veicolo manda la propria posizione
-a un server ogni trenta secondi; il server capisce se il veicolo è fermo o in
+a un server ogni trenta secondi, il server capisce se il veicolo è fermo o in
 movimento, tiene lo storico degli spostamenti e permette a chi coordina la
 flotta di consultarlo e di scambiare messaggi con gli autisti.
 
@@ -116,7 +116,7 @@ transizione porta comunque la data in cui la soglia è scaduta davvero.
 
 ## 4. I file
 
-### `geo-core` — le regole
+### `geo-core` - le regole
 
 Qui non succede niente di concreto: si calcola soltanto. Se devi cambiare *cosa
 significa* essere fermi, o come si misura un tragitto, il file è in questa
@@ -132,14 +132,14 @@ cartella.
 | `timerange.rs` | traduce «giorno corrente», «settimana corrente», «mese corrente» in due date precise |
 | `analytics.rs` | da intervalli e posizioni ricava il resoconto: chilometri, velocità medie, tempi di marcia e di sosta |
 
-### `geo-protocol` — cosa viaggia sulla rete
+### `geo-protocol` - cosa viaggia sulla rete
 
 | File | Contiene |
 |---|---|
 | `messages.rs` | i messaggi, divisi in quattro gruppi secondo chi parla e chi ascolta, più i codici di errore e il numero di versione |
 | `codec.rs` | come un messaggio diventa una sequenza di byte e come i byte si riseparano in messaggi |
 
-### `geo-net` — il lato client della connessione
+### `geo-net` - il lato client della connessione
 
 | File | Contiene |
 |---|---|
@@ -148,7 +148,7 @@ cartella.
 
 Chi riceve un avviso non sa niente di rete: vede solo che è successo qualcosa.
 
-### `geo-server` — il cuore
+### `geo-server` - il cuore
 
 | File | Contiene |
 |---|---|
@@ -166,7 +166,7 @@ Chi riceve un avviso non sa niente di rete: vede solo che è successo qualcosa.
 
 
 
-### `geo-client` — il programma dell'autista
+### `geo-client` - il programma dell'autista
 
 | File | Contiene |
 |---|---|
@@ -178,7 +178,7 @@ Con `--headless` il client gira senza interfaccia e si limita a mandare le
 posizioni: serve per avviarne molti da script, con la password presa dalla
 variabile d'ambiente `GEO_PASS`.
 
-### `geo-admin` — la console del coordinatore
+### `geo-admin` - la console del coordinatore
 
 | File | Contiene |
 |---|---|

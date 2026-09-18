@@ -1,6 +1,6 @@
 # Il database
 
-Il server conserva i propri dati in **SQLite**, in un unico file il cui percorso
+Il server conserva i propri dati in SQLite, in un unico file il cui percorso
 si indica con `--db` (predefinito: `georuggine.db`).
 
 
@@ -18,7 +18,7 @@ si indica con `--db` (predefinito: `georuggine.db`).
                                  (from_user)    (to_user)
 ```
 
-Quattro tabelle. `users` è l'unica indipendente; le altre tre vi fanno
+Quattro tabelle. `users` è l'unica indipendente, le altre tre vi fanno
 riferimento.
 
 | Tabella | Contiene | Cresce |
@@ -30,7 +30,7 @@ riferimento.
 
 ---
 
-## `users` — account e credenziali
+## `users` - account e credenziali
 
 ```sql
 CREATE TABLE IF NOT EXISTS users (
@@ -46,13 +46,13 @@ CREATE TABLE IF NOT EXISTS users (
 |---|---|
 | `id` | Identificatore assegnato da SQLite. È il valore che viaggia nel protocollo. |
 | `username` | Nome scelto dall'utente. Il vincolo `UNIQUE` è ciò che rifiuta i duplicati. |
-| `password_hash` | Stringa PHC completa di Argon2. **Mai la password in chiaro.** |
+| `password_hash` | Stringa PHC completa di Argon2. Mai la password in chiaro. |
 | `role` | `'trucker'` oppure `'admin'`. Distingue le due entità del sistema. |
 | `created_at` | Istante di creazione. |
 
 ---
 
-## `positions` — lo storico degli spostamenti
+## `positions` - lo storico degli spostamenti
 
 ```sql
 CREATE TABLE IF NOT EXISTS positions (
@@ -83,7 +83,7 @@ evita una scansione completa quando la tabella cresce.
 
 ---
 
-## `state_intervals` — lo storico degli stati
+## `state_intervals` - lo storico degli stati
 
 ```sql
 CREATE TABLE IF NOT EXISTS state_intervals (
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS state_intervals (
 |---|---|
 | `state` | `'disconnected'`, `'stopped'` oppure `'moving'`. |
 | `start_at` | Inizio dell'intervallo, ISO 8601 UTC. |
-| `end_at` | Fine. **`NULL` significa "ancora in corso"**, cioè lo stato attuale dell'utente. |
+| `end_at` | Fine. `NULL` significa "ancora in corso", cioè lo stato attuale dell'utente. |
 
 
 
@@ -110,11 +110,11 @@ CREATE TABLE IF NOT EXISTS state_intervals (
 Se il server termina in modo anomalo mentre alcuni utenti sono collegati, i loro
 intervalli restano aperti: nessuno tornerà a chiuderli.
 
-Il problema non è l'errore in sé, ma che **cresce**: la durata di un intervallo
+Il problema non è l'errore in sé, ma che cresce: la durata di un intervallo
 aperto si calcola fino a "adesso", quindi un utente scollegato da tre giorni
 risulterebbe fermo da tre giorni, e il valore aumenterebbe a ogni interrogazione.
 
-All'avvio, **prima di accettare connessioni**, il server chiude tutti gli
+All'avvio, prima di accettare connessioni, il server chiude tutti gli
 intervalli rimasti aperti usando l'istante di avvio come fine. È una scelta
 conservativa: non si può sapere quando il server sia morto davvero, ma un errore
 limitato è preferibile a uno che cresce senza fine.
@@ -124,7 +124,7 @@ intervalli appena aperti da chi si sta ricollegando.
 
 ---
 
-## `messages` — lo storico della chat
+## `messages` - lo storico della chat
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
@@ -144,8 +144,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_pending
 
 | Campo | `NULL` significa |
 |---|---|
-| `from_user_id` | il messaggio viene **dall'amministratore** |
-| `to_user_id` | il messaggio è un **broadcast**, diretto a tutti |
+| `from_user_id` | il messaggio viene dall'amministratore |
+| `to_user_id` | il messaggio è un broadcast, diretto a tutti |
 
 Le quattro combinazioni coprono l'intero spazio dei messaggi previsti:
 
@@ -155,9 +155,3 @@ Le quattro combinazioni coprono l'intero spazio dei messaggi previsti:
 | `NULL` | id | messaggio diretto dell'amministratore a un camionista |
 | id | `NULL` | messaggio di un camionista verso la console |
 | id | id | non usato attualmente |
-
-
-
----
-
-
