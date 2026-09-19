@@ -18,6 +18,13 @@ use chrono::Duration;
 /// Intervallo di trasmissione della posizione. Valore fissato dalla specifica.
 pub const POSITION_INTERVAL_SECS: i64 = 30;
 
+/// Questo tempo fa in modo che nel report del movimento se due posizioni consecutive
+/// vengono registrate con un intervallo maggiore di 90 sec la tratta non entra nel tragitto.
+/// Questa costante si rende necessaria dal momento che se il tracciamento si interrompe e
+/// riprende altrove, la retta fra l'ultima posizione prima del buco e il primo dopo entrino nel
+/// tragitto aumentando esponenzialmente la distanza percorsa e la velocità media di marcia.
+pub const MAX_TRACKING_GAP_SECS: i64 = 3 * POSITION_INTERVAL_SECS;
+
 /// Tempo di coordinate invariate dopo il quale IN MOVIMENTO -> FERMO.
 pub const STOP_THRESHOLD_SECS: i64 = 180;
 

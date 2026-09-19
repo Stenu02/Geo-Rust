@@ -90,12 +90,17 @@ pub fn analyze(
     }
 }
 
-/// Distanza totale di una polilinea, in chilometri.
+/// Distanza totale di una polilinea, espressa in chilometri.
+///
+///Utilizzo `fold` al posto di`sum()`poiché su un iteratore vuoto
+/// (meno di due posizioni) `sum()` per gli `f64` restituisce `-0.0`, che nel
+/// resoconto verrebbe mostrato come "-0.00 km".
 pub fn total_distance_km(positions: &[FixedPosition]) -> f64 {
     positions
         .windows(2)
+        .filter(|w| w[1].at - w[0].at <= Duration::seconds(crate::MAX_TRACKING_GAP_SECS))
         .map(|w| haversine_km(&w[0].value, &w[1].value))
-        .sum()
+        .fold(0.0, |totale, tratta| totale + tratta)
 }
 
 pub fn avg_speed(distance_km: f64, time: Duration) -> f64 {
@@ -123,14 +128,17 @@ mod tests {
 
     #[test]
     fn test_total_distance_km_sums_legs() {
-        // Torino -> Asti -> Torino: due tratte di ~44 km ciascuna.
+        // Tre punti lungo una via di Torino, a 30 s l'uno dall'altro: il tragitto
+        // è la somma delle due tratte.
+        let t0 = utc(10, 0);
         let track = [
-            fp(utc(10, 0), 45.0703, 7.6869),
-            fp(utc(11, 0), 44.9009, 8.2065),
-            fp(utc(12, 0), 45.0703, 7.6869),
+            fp(t0, 45.0618513, 7.6797161),
+            fp(t0 + Duration::seconds(30), 45.0601242, 7.6851330),
+            fp(t0 + Duration::seconds(60), 45.0577891, 7.6923447),
         ];
-        let d = total_distance_km(&track);
-        assert!((d - 88.0).abs() < 2.0, "atteso ~88 km, ottenuto {d}");
+        let attesa = haversine_km(&track[0].value, &track[1].value)
+            + haversine_km(&track[1].value, &track[2].value);
+        assert!((total_distance_km(&track) - attesa).abs() < 1e-9);
     }
 
     #[test]
@@ -148,7 +156,7 @@ mod tests {
             StateInterval::closed(UserState::Moving, utc(11, 0), utc(12, 0)),
             StateInterval::closed(UserState::Stopped, utc(12, 0), utc(13, 0)),
         ];
-        let positions = [fp(utc(11, 0), 45.0, 7.0), fp(utc(12, 0), 45.5, 7.0)];
+        let positions = [fp(utc(11, 0), 45.0, 7.0), fp(utc(11, 0) + Duration::seconds(30), 45.001, 7.0),];
         let r = analyze(
             UserId(1),
             RangeSpec::Today,
@@ -207,5 +215,35 @@ mod tests {
         );
         assert_eq!(r.track.len(), 2);
         assert_eq!(r.track[0].at, utc(11, 0));
+    }
+
+    #[test]
+    fn test_report_senza_posizioni_non_ha_zeri_negativi() {
+        // In IEEE 754 -0.0 == 0.0 e' vero: per questo un assert_eq! con 0.0 non si
+        // accorge dello zero negativo, che pero' a schermo diventa "-0.00".
+        assert!(total_distance_km(&[]).is_sign_positive());
+        assert!(total_distance_km(&[fp(utc(10, 0), 45.0, 7.0)]).is_sign_positive());
+
+        // Un'ora di movimento registrata, ma nessuna posizione nel periodo.
+        let range = TimeRange::new(utc(10, 0), utc(20, 0));
+        let intervals = [StateInterval::closed(UserState::Moving, utc(11, 0), utc(12, 0))];
+        let r = analyze(UserId(1), RangeSpec::Today, range, &intervals, &[], utc(23, 0));
+        assert_eq!(format!("{:.2}", r.distance_km), "0.00");
+        assert_eq!(format!("{:.2}", r.avg_speed_moving_kmh), "0.00");
+        assert_eq!(format!("{:.2}", r.avg_speed_overall_kmh), "0.00");
+    }
+
+    #[test]
+    fn test_tratta_con_un_buco_nel_tracciamento_non_conta() {
+        // Due punti a 30 s: la tratta conta. Poi un'ora senza posizioni (client
+        // spento, server riavviato...): non sappiamo che strada abbia fatto, quindi
+        // il salto fino al punto successivo non entra nel tragitto.
+        let track = [
+            fp(utc(10, 0), 45.0, 7.0),
+            fp(utc(10, 0) + Duration::seconds(30), 45.001, 7.0),
+            fp(utc(11, 0), 45.5, 7.0),
+        ];
+        let prima_tratta = haversine_km(&track[0].value, &track[1].value);
+        assert!((total_distance_km(&track) - prima_tratta).abs() < 1e-9);
     }
 }

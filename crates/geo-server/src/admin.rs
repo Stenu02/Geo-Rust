@@ -59,7 +59,7 @@ mod tests {
         ];
         let positions = [
             Timestamped::new(at(2), Position::new(45.0, 7.0)),
-            Timestamped::new(at(3), Position::new(45.5, 7.0)),
+            Timestamped::new(at(2) + Duration::seconds(30), Position::new(45.5, 7.0)),
         ];
 
         // Distanza attesa, calcolata a parte per confrontarla con il resoconto.
