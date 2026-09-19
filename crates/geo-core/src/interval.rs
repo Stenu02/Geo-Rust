@@ -32,10 +32,6 @@ impl StateInterval {
         }
     }
 
-    pub fn is_open(&self) -> bool {
-        self.end.is_none()
-    }
-
     /// La fine usata nei calcoli: quella reale, oppure `now` per un intervallo aperto.
     fn effective_end(&self, now: DateTime<Utc>) -> DateTime<Utc> {
         self.end.unwrap_or(now)

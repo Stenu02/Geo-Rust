@@ -47,9 +47,6 @@ pub const COORD_EPSILON_DEG: f64 = 1e-6;
 /// quello dell'azienda, non di dove gira il server.
 pub const COMPANY_TZ: chrono_tz::Tz = chrono_tz::Europe::Rome;
 
-pub fn position_interval() -> Duration {
-    Duration::seconds(POSITION_INTERVAL_SECS)
-}
 
 pub fn stop_threshold() -> Duration {
     Duration::seconds(STOP_THRESHOLD_SECS)
