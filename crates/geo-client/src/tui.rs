@@ -29,6 +29,12 @@ pub struct ClientUi {
     pub last_update: Option<chrono::DateTime<chrono::Local>>,
 }
 
+impl Default for ClientUi {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClientUi {
     pub fn new() -> Self {
         Self {
@@ -158,8 +164,8 @@ impl ClientUi {
                                     let msg = self.input.clone();
 
                                     // Intercetta il comando per forzare la posizione
-                                    if msg.starts_with("/pos ") {
-                                        let parts: Vec<&str> = msg[5..].split(',').collect();
+                                    if let Some(coordinate) = msg.strip_prefix("/pos ") {
+                                        let parts: Vec<&str> = coordinate.split(',').collect();
                                         if parts.len() == 2 {
                                             if let (Ok(lat), Ok(lon)) = (parts[0].trim().parse::<f64>(), parts[1].trim().parse::<f64>()) {
                                                 let _ = manual_pos_tx.send(Position::new(lat, lon)).await;

@@ -2,6 +2,7 @@
 //! Gestisce handshake, invio comandi, ricezione eventi e riconnessione automatica
 
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use geo_core::Position;
 use geo_protocol::{
@@ -9,11 +10,10 @@ use geo_protocol::{
     ServerMessage, PROTOCOL_VERSION,
 };
 use serde::{de::DeserializeOwned, Serialize};
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use chrono::Utc;
-use std::time::Duration;
 
 use super::events::Event;
 
@@ -71,7 +71,10 @@ pub async fn send_msg<T: Serialize>(framed: &mut ClientFramed, msg: &T) -> anyho
 /// Riceve e deserializza il prossimo messaggio dal socket
 /// (pubblica per permetterne l'uso anche da geo-admin)
 pub async fn recv_msg<T: DeserializeOwned>(framed: &mut ClientFramed) -> anyhow::Result<T> {
-    let frame = framed.next().await.ok_or_else(|| anyhow::anyhow!("Connessione chiusa."))??;
+    let frame = framed
+        .next()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Connessione chiusa."))??;
     Ok(decode(&frame)?)
 }
 
@@ -90,7 +93,10 @@ impl ClientHandle {
 
         tokio::spawn(run_connection(framed, command_rx, event_tx, opts, policy));
 
-        Ok(Self { command_tx, event_rx })
+        Ok(Self {
+            command_tx,
+            event_rx,
+        })
     }
 }
 
@@ -101,7 +107,14 @@ pub async fn connect_and_auth(opts: &ConnectOptions) -> anyhow::Result<ClientFra
     let mut framed = Framed::new(stream, frame_codec());
 
     // l'handshake dichiara il ruolo dinamicamente in base alle opzioni
-    send_msg(&mut framed, &Hello { protocol_version: PROTOCOL_VERSION, role: opts.role }).await?;
+    send_msg(
+        &mut framed,
+        &Hello {
+            protocol_version: PROTOCOL_VERSION,
+            role: opts.role,
+        },
+    )
+    .await?;
 
     match opts.role {
         Role::Trucker => {
@@ -112,19 +125,33 @@ pub async fn connect_and_auth(opts: &ConnectOptions) -> anyhow::Result<ClientFra
 
             // Gestisce la registrazione se richiesta dal client prima di fare login
             if opts.register {
-                send_msg(&mut framed, &ClientMessage::Register {
-                    username: opts.username.clone(),
-                    password: opts.password.clone()
-                }).await?;
+                send_msg(
+                    &mut framed,
+                    &ClientMessage::Register {
+                        username: opts.username.clone(),
+                        password: opts.password.clone(),
+                    },
+                )
+                .await?;
 
                 match recv_msg::<ServerMessage>(&mut framed).await? {
                     ServerMessage::RegisterOk { .. } => {}
-                    ServerMessage::Error { code: ErrorCode::UsernameTaken, .. } => {}
+                    ServerMessage::Error {
+                        code: ErrorCode::UsernameTaken,
+                        ..
+                    } => {}
                     other => return Err(anyhow::anyhow!("Registrazione fallita: {:?}.", other)),
                 }
             }
 
-            send_msg(&mut framed, &ClientMessage::Login { username: opts.username.clone(), password: opts.password.clone() }).await?;
+            send_msg(
+                &mut framed,
+                &ClientMessage::Login {
+                    username: opts.username.clone(),
+                    password: opts.password.clone(),
+                },
+            )
+            .await?;
             match recv_msg::<ServerMessage>(&mut framed).await? {
                 ServerMessage::LoginOk { .. } => Ok(framed),
                 other => Err(anyhow::anyhow!("Login fallito: {:?}.", other)),
@@ -136,10 +163,14 @@ pub async fn connect_and_auth(opts: &ConnectOptions) -> anyhow::Result<ClientFra
                 other => return Err(anyhow::anyhow!("Handshake fallito: {:?}.", other)),
             }
 
-            send_msg(&mut framed, &AdminMessage::Login {
-                username: opts.username.clone(),
-                password: opts.password.clone()
-            }).await?;
+            send_msg(
+                &mut framed,
+                &AdminMessage::Login {
+                    username: opts.username.clone(),
+                    password: opts.password.clone(),
+                },
+            )
+            .await?;
 
             match recv_msg::<AdminReply>(&mut framed).await? {
                 AdminReply::LoginOk { .. } => Ok(framed),
@@ -162,7 +193,11 @@ async fn run_connection(
 
     // Notifica iniziale alla UI
     let _ = event_tx.send(Event::Connected).await;
-    let _ = event_tx.send(Event::LoggedIn { username: opts.username.clone() }).await;
+    let _ = event_tx
+        .send(Event::LoggedIn {
+            username: opts.username.clone(),
+        })
+        .await;
 
     loop {
         tokio::select! {

@@ -4,13 +4,13 @@
 //! `MovementReport` già pronto e si limita a mostrarlo.
 //! Requisiti Funzionali rispettati: RF8, RF9, RF10
 
+use crate::geo_math::haversine_km;
 use crate::interval::{total_in, StateInterval};
 use crate::position::{FixedPosition, UserId};
 use crate::timerange::{RangeSpec, TimeRange};
+use crate::UserState;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use crate::geo_math::haversine_km;
-use crate::UserState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovementReport {
@@ -56,15 +56,19 @@ pub fn analyze(
     positions: &[FixedPosition],
     now: DateTime<Utc>,
 ) -> MovementReport {
-    let track: Vec<FixedPosition> = positions.iter().copied()
-        .filter(|p| range.contains(p.at)).collect();
+    let track: Vec<FixedPosition> = positions
+        .iter()
+        .copied()
+        .filter(|p| range.contains(p.at))
+        .collect();
     let distance_km = total_distance_km(&track);
 
     let moving_time = total_in(intervals, UserState::Moving, &range, now);
     let paused_time = total_in(intervals, UserState::Stopped, &range, now);
     let disconnected_time = total_in(intervals, UserState::Disconnected, &range, now);
 
-    let pause_count = intervals.iter()
+    let pause_count = intervals
+        .iter()
         .filter(|i| i.state == UserState::Stopped && i.clip_to(&range, now).is_some())
         .count();
 
@@ -88,10 +92,13 @@ pub fn analyze(
 
 /// Distanza totale di una polilinea, in chilometri.
 pub fn total_distance_km(positions: &[FixedPosition]) -> f64 {
-    positions.windows(2).map(|w| haversine_km(&w[0].value, &w[1].value)).sum()
+    positions
+        .windows(2)
+        .map(|w| haversine_km(&w[0].value, &w[1].value))
+        .sum()
 }
 
-pub fn avg_speed(distance_km: f64, time:Duration) -> f64 {
+pub fn avg_speed(distance_km: f64, time: Duration) -> f64 {
     let hours = time.num_seconds() as f64 / 3600.0;
     if hours > 0.0 {
         distance_km / hours
@@ -142,7 +149,14 @@ mod tests {
             StateInterval::closed(UserState::Stopped, utc(12, 0), utc(13, 0)),
         ];
         let positions = [fp(utc(11, 0), 45.0, 7.0), fp(utc(12, 0), 45.5, 7.0)];
-        let r = analyze(UserId(1), RangeSpec::Today, range, &intervals, &positions, utc(23, 0));
+        let r = analyze(
+            UserId(1),
+            RangeSpec::Today,
+            range,
+            &intervals,
+            &positions,
+            utc(23, 0),
+        );
 
         assert_eq!(r.moving_time, Duration::hours(1));
         assert_eq!(r.paused_time, Duration::hours(1));
@@ -156,9 +170,20 @@ mod tests {
     fn test_avg_speed_zero_when_not_moving() {
         // Nessun movimento: la guardia restituisce 0.0, mai NaN da una divisione per zero.
         let range = TimeRange::new(utc(10, 0), utc(20, 0));
-        let intervals = [StateInterval::closed(UserState::Stopped, utc(11, 0), utc(13, 0))];
+        let intervals = [StateInterval::closed(
+            UserState::Stopped,
+            utc(11, 0),
+            utc(13, 0),
+        )];
         let positions = [fp(utc(11, 0), 45.0, 7.0)];
-        let r = analyze(UserId(1), RangeSpec::Today, range, &intervals, &positions, utc(23, 0));
+        let r = analyze(
+            UserId(1),
+            RangeSpec::Today,
+            range,
+            &intervals,
+            &positions,
+            utc(23, 0),
+        );
         assert_eq!(r.avg_speed_moving_kmh, 0.0);
         assert!(!r.avg_speed_moving_kmh.is_nan());
     }
@@ -172,7 +197,14 @@ mod tests {
             fp(utc(11, 0), 45.0, 7.0),
             fp(utc(12, 0), 45.5, 7.0),
         ];
-        let r = analyze(UserId(1), RangeSpec::Today, range, &[], &positions, utc(23, 0));
+        let r = analyze(
+            UserId(1),
+            RangeSpec::Today,
+            range,
+            &[],
+            &positions,
+            utc(23, 0),
+        );
         assert_eq!(r.track.len(), 2);
         assert_eq!(r.track[0].at, utc(11, 0));
     }

@@ -52,9 +52,7 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_timer(LocalTimer)
-        .init();
+    tracing_subscriber::fmt().with_timer(LocalTimer).init();
     let args = Args::parse();
 
     // Modalita' "crea amministratore": fa una cosa sola e termina, senza mai
@@ -75,7 +73,6 @@ async fn main() -> anyhow::Result<()> {
 
     server.run().await
 }
-
 
 /// Trasforma Ctrl-C in una richiesta di chiusura ordinata.
 ///

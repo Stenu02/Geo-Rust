@@ -1,6 +1,5 @@
 //! Framing e serializzazione.
 
-
 use serde::{de::DeserializeOwned, Serialize};
 use tokio_util::codec::LengthDelimitedCodec;
 
@@ -42,8 +41,6 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
 mod tests {
     use super::*;
     use crate::messages::{ClientMessage, ErrorCode, ServerMessage};
-
-
 
     #[test]
     fn roundtrip_preserva_i_campi() {

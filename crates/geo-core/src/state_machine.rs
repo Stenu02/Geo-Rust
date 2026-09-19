@@ -6,9 +6,9 @@
 //! Requisiti Funzionali rispettati: RF5, RF6, RF7
 
 use crate::position::Position;
+use crate::stop_threshold;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::{stop_threshold};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UserState {
@@ -42,7 +42,7 @@ impl UserState {
             "disconnected" => Some(UserState::Disconnected),
             "stopped" => Some(UserState::Stopped),
             "moving" => Some(UserState::Moving),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -55,7 +55,7 @@ pub struct Transition {
     pub at: DateTime<Utc>,
 }
 
-/// Rappresenta lo stato di un singolo utente. 
+/// Rappresenta lo stato di un singolo utente.
 /// Viene creata una istanza per utente connesso, tenuta dal server.
 #[derive(Debug, Clone)]
 pub struct StateMachine {
@@ -116,28 +116,22 @@ impl StateMachine {
     /// - coordinata diversa dalla precedente: FERMO -> IN MOVIMENTO, e in ogni caso
     ///   aggiorna `last_change_at`
     /// - coordinata uguale: nessuna transizione qui (il compito è delegato a `on_tick`)
-    pub fn on_position(
-        &mut self,
-        now: DateTime<Utc>,
-        position: Position,
-    ) -> Option<Transition> {
+    pub fn on_position(&mut self, now: DateTime<Utc>, position: Position) -> Option<Transition> {
         match self.state {
             UserState::Stopped => {
                 if self.last_position.is_none() {
                     self.last_position = Some(position);
                     None
-                }
-                else if self.last_position.unwrap().differs_from(&position) {
+                } else if self.last_position.unwrap().differs_from(&position) {
                     self.last_position = Some(position);
                     self.last_change_at = Some(now);
                     Some(self.transition_to(UserState::Moving, now))
-                }
-                else {
+                } else {
                     None
                 }
             }
             UserState::Moving => {
-                if let Some(prev) =self.last_position{
+                if let Some(prev) = self.last_position {
                     if prev.differs_from(&position) {
                         self.last_position = Some(position);
                         self.last_change_at = Some(now);
@@ -145,7 +139,7 @@ impl StateMachine {
                 }
                 None
             }
-            _ => None
+            _ => None,
         }
     }
 
@@ -164,7 +158,9 @@ impl StateMachine {
         if let Some(last_change_at) = self.last_change_at {
             let delta = now - last_change_at;
             if delta >= stop_threshold() {
-                return Some(self.transition_to(UserState::Stopped, last_change_at + stop_threshold() ))
+                return Some(
+                    self.transition_to(UserState::Stopped, last_change_at + stop_threshold()),
+                );
             }
         }
         None
@@ -175,7 +171,7 @@ impl StateMachine {
     /// Alla riconnessione il timer dei 3 minuti riparte.
     pub fn on_disconnect(&mut self, now: DateTime<Utc>) -> Option<Transition> {
         if self.state == UserState::Disconnected {
-            return None
+            return None;
         }
         self.last_position = None;
         self.last_change_at = None;
@@ -195,14 +191,17 @@ mod tests {
     use crate::stop_threshold;
     use chrono::{Duration, TimeZone};
 
-
     fn t(offset_secs: i64) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 20, 12, 0, 0).unwrap() + Duration::seconds(offset_secs)
     }
 
     #[test]
     fn test_user_state_db_string_roundtrip() {
-        for s in [UserState::Disconnected, UserState::Stopped, UserState::Moving] {
+        for s in [
+            UserState::Disconnected,
+            UserState::Stopped,
+            UserState::Moving,
+        ] {
             assert_eq!(UserState::from_db_str(s.as_db_str()), Some(s));
         }
         assert_eq!(UserState::from_db_str("garbage"), None);
@@ -217,7 +216,10 @@ mod tests {
 
         // login: SCONNESSO -> FERMO
         let tr = sm.on_login(t(0)).unwrap();
-        assert_eq!((tr.from, tr.to), (UserState::Disconnected, UserState::Stopped));
+        assert_eq!(
+            (tr.from, tr.to),
+            (UserState::Disconnected, UserState::Stopped)
+        );
 
         // primo fix: non e' un cambio, resta FERMO
         assert!(sm.on_position(t(30), Position::new(45.0, 7.0)).is_none());
@@ -228,12 +230,17 @@ mod tests {
         assert_eq!((tr.from, tr.to), (UserState::Stopped, UserState::Moving));
 
         // 3 min senza cambiare: IN MOVIMENTO -> FERMO
-        let tr = sm.on_tick(t(60) + stop_threshold() + Duration::seconds(5)).unwrap();
+        let tr = sm
+            .on_tick(t(60) + stop_threshold() + Duration::seconds(5))
+            .unwrap();
         assert_eq!((tr.from, tr.to), (UserState::Moving, UserState::Stopped));
 
         // disconnessione: FERMO -> SCONNESSO, mantenendo il `from` reale
         let tr = sm.on_disconnect(t(400)).unwrap();
-        assert_eq!((tr.from, tr.to), (UserState::Stopped, UserState::Disconnected));
+        assert_eq!(
+            (tr.from, tr.to),
+            (UserState::Stopped, UserState::Disconnected)
+        );
         assert_eq!(sm.state(), UserState::Disconnected);
     }
 

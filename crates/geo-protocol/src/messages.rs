@@ -1,6 +1,5 @@
 //! I messaggi che viaggiano sul filo.
 
-
 use chrono::{DateTime, Utc};
 use geo_core::{MovementReport, Position, RangeSpec, UserId, UserState};
 use serde::{Deserialize, Serialize};

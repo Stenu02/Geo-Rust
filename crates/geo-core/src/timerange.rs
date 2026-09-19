@@ -1,7 +1,6 @@
-
-use chrono::{DateTime, Duration, Utc, Datelike, Months, TimeZone, NaiveDate};
-use serde::{Deserialize, Serialize};
 use crate::COMPANY_TZ;
+use chrono::{DateTime, Datelike, Duration, Months, NaiveDate, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Quale periodo si vuole analizzare. E' cio' che l'amministratore sceglie
 /// nell'interfaccia e che viaggia nel protocollo.
@@ -37,7 +36,7 @@ fn local_midnight_to_utc(date: NaiveDate) -> DateTime<Utc> {
     let naive = date.and_hms_opt(0, 0, 0).unwrap();
     COMPANY_TZ
         .from_local_datetime(&naive)
-        .single()  // la mezzanotte e' univoca in Europe/Rome
+        .single() // la mezzanotte e' univoca in Europe/Rome
         .expect("la mezzanotte locale esiste sempre in Europe/Rome")
         .with_timezone(&Utc)
 }

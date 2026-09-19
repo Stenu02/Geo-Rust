@@ -4,11 +4,11 @@
 
 use clap::Parser;
 use geo_client::simulator::{PositionSimulator, Strategy};
-use std::path::PathBuf;
-use std::time::Duration;
 use geo_core::Position;
 use geo_net::connection::{ClientHandle, Command, ConnectOptions, ReconnectPolicy};
 use geo_protocol::Role;
+use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::watch;
 
 #[derive(Parser)]
@@ -71,9 +71,7 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_timer(LocalTimer)
-        .init();
+    tracing_subscriber::fmt().with_timer(LocalTimer).init();
     let mut args = Args::parse();
 
     // Se non arriva dall'ambiente la si chiede adesso, senza mostrarla.
@@ -95,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
             from: parse_pos(parts[0])?,
             to: parse_pos(parts[1])?,
             duration_secs: 600,
-            pauses: vec![]
+            pauses: vec![],
         }
     } else if let Some(rnd_str) = args.random {
         let parts: Vec<&str> = rnd_str.split(';').collect();
@@ -104,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Strategy::Random {
             origin: parse_pos(parts[0])?,
-            radius_km: parts[1].trim().parse()?
+            radius_km: parts[1].trim().parse()?,
         }
     } else {
         Strategy::Manual
@@ -190,14 +188,19 @@ async fn main() -> anyhow::Result<()> {
         {
             use geo_client::tui::ClientUi;
             let mut ui = ClientUi::new();
-            if let Err(e) = ui.run(handle.command_tx.clone(), manual_pos_tx, event_rx, pos_rx).await {
+            if let Err(e) = ui
+                .run(handle.command_tx.clone(), manual_pos_tx, event_rx, pos_rx)
+                .await
+            {
                 tracing::error!("Errore nell'esecuzione della TUI: {}.", e);
             }
         }
 
         #[cfg(not(feature = "tui"))]
         {
-            tracing::warn!("Il client è stato compilato senza la feature 'tui'. Esecuzione terminata.");
+            tracing::warn!(
+                "Il client è stato compilato senza la feature 'tui'. Esecuzione terminata."
+            );
         }
     }
 

@@ -33,6 +33,12 @@ pub struct AppState {
     pub last_error: Option<String>,
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
         Self {
@@ -353,10 +359,10 @@ impl AdminUi {
 
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
-                    if key.kind == crossterm::event::KeyEventKind::Press {
-                        if !self.state.handle_key_event(key, &self.command_tx) {
-                            break;
-                        }
+                    if key.kind == crossterm::event::KeyEventKind::Press
+                        && !self.state.handle_key_event(key, &self.command_tx)
+                    {
+                        break;
                     }
                 }
             }
@@ -603,11 +609,7 @@ impl AdminUi {
         let lines_count = chat_history.lines().count() as u16;
         let history_height = v_chunks[0].height.saturating_sub(2);
 
-        let scroll_offset = if lines_count > history_height {
-            lines_count - history_height
-        } else {
-            0
-        };
+        let scroll_offset = lines_count.saturating_sub(history_height);
 
         let history_p = Paragraph::new(chat_history)
             .block(

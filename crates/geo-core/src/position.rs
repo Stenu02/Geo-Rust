@@ -34,7 +34,6 @@ impl Position {
     }
 
     /// Vero se le due coordinate vanno considerate diverse.
-
     pub fn differs_from(&self, other: &Position) -> bool {
         (self.lat - other.lat).abs() > COORD_EPSILON_DEG
             || (self.lon - other.lon).abs() > COORD_EPSILON_DEG
@@ -42,14 +41,7 @@ impl Position {
 
     /// Validazione: latitudine in [-90, 90], longitudine in [-180, 180].
     pub fn is_valid(&self) -> bool {
-        if self.lat < -90.0 || self.lon < -180.0
-        || self.lat > 90.0 || self.lon > 180.0
-        || self.lat.is_nan() || self.lon.is_nan() {
-            false
-        } else {
-            true
-        }
-
+        (-90.0..=90.0).contains(&self.lat) && (-180.0..=180.0).contains(&self.lon)
     }
 }
 

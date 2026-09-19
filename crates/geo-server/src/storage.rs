@@ -33,6 +33,9 @@ const CODA: usize = 64;
 
 /// Le operazioni che il task sa eseguire.
 ///
+/// Canale su cui l'attore manda l'esito di un comando.
+type Risposta<T> = oneshot::Sender<anyhow::Result<T>>;
+
 /// Ogni variante porta con se' il canale su cui rispondere: chi manda il
 /// comando resta in attesa su quel canale.
 enum Command {
@@ -40,36 +43,36 @@ enum Command {
         username: String,
         password_hash: String,
         role: String,
-        reply: oneshot::Sender<anyhow::Result<UserId>>,
+        reply: Risposta<UserId>,
     },
     FindUser {
         username: String,
         /// `Some(id, hash, ruolo)` se esiste, `None` se non c'e'.
-        reply: oneshot::Sender<anyhow::Result<Option<Utente>>>,
+        reply: Risposta<Option<Utente>>,
     },
     PositionsFor {
         user: UserId,
         range: TimeRange,
-        reply: oneshot::Sender<anyhow::Result<Vec<FixedPosition>>>,
+        reply: Risposta<Vec<FixedPosition>>,
     },
     IntervalsFor {
         user: UserId,
         range: TimeRange,
-        reply: oneshot::Sender<anyhow::Result<Vec<StateInterval>>>,
+        reply: Risposta<Vec<StateInterval>>,
     },
     /// Salva una posizione ricevuta da un camionista.
     SavePosition {
         user: UserId,
         at: DateTime<Utc>,
         position: Position,
-        reply: oneshot::Sender<anyhow::Result<()>>,
+        reply: Risposta<()>,
     },
     /// Chiude l'intervallo di stato aperto e ne apre uno nuovo.
     ApplyTransition {
         user: UserId,
         to: UserState,
         at: DateTime<Utc>,
-        reply: oneshot::Sender<anyhow::Result<()>>,
+        reply: Risposta<()>,
     },
     /// Salva un messaggio di chat nello storico.
     SaveMessage {
@@ -78,18 +81,18 @@ enum Command {
         body: String,
         at: DateTime<Utc>,
         delivered: bool,
-        reply: oneshot::Sender<anyhow::Result<()>>,
+        reply: Risposta<()>,
     },
     /// Prende i messaggi diretti a un utente che non gli sono mai arrivati,
     /// e li segna come consegnati.
     TakePending {
         user: UserId,
-        reply: oneshot::Sender<anyhow::Result<Vec<(String, DateTime<Utc>)>>>,
+        reply: Risposta<Vec<(String, DateTime<Utc>)>>,
     },
     /// Chiude gli intervalli rimasti aperti da un'esecuzione precedente.
     CloseDangling {
         at: DateTime<Utc>,
-        reply: oneshot::Sender<anyhow::Result<usize>>,
+        reply: Risposta<usize>,
     },
 }
 
@@ -466,89 +469,6 @@ fn intervalli_per(
     Ok(output)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::TimeZone;
-
-    fn utc(h: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 20, h, 0, 0).unwrap()
-    }
-
-    /// Database in memoria con lo schema applicato e un utente di prova.
-    fn db_con_utente() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::SCHEMA).unwrap();
-        conn.execute(
-            "INSERT INTO users (id, username, password_hash, role, created_at)
-             VALUES (1, 'camion', 'x', 'trucker', ?1)",
-            [utc(0).to_rfc3339()],
-        )
-        .unwrap();
-        conn
-    }
-
-    #[test]
-    fn test_posizioni_per_filtra_sul_range() {
-        let conn = db_con_utente();
-        for (at, lat, lon) in [
-            (utc(11), 45.0, 7.0),
-            (utc(12), 45.5, 7.0),
-            (utc(23), 46.0, 7.0),
-        ] {
-            conn.execute(
-                "INSERT INTO positions (user_id, at, lat, lon) VALUES (1, ?1, ?2, ?3)",
-                (at.to_rfc3339(), lat, lon),
-            )
-            .unwrap();
-        }
-
-        // Periodo dalle 10 alle 20, estremo finale escluso.
-        let range = TimeRange::new(utc(10), utc(20));
-        let pos = posizioni_per(&conn, UserId(1), range).unwrap();
-
-        // Quella delle 23 resta fuori.
-        assert_eq!(pos.len(), 2);
-        assert_eq!(pos[0].at, utc(11));
-        assert_eq!(pos[1].at, utc(12));
-    }
-
-    #[test]
-    fn test_intervalli_per_include_sovrapposti_e_aperti() {
-        let conn = db_con_utente();
-        // Chiuso e tutto dentro il periodo.
-        conn.execute(
-            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
-             VALUES (1, 'moving', ?1, ?2)",
-            (utc(11).to_rfc3339(), utc(12).to_rfc3339()),
-        )
-        .unwrap();
-        // Ancora aperto: si sovrappone al periodo e va incluso.
-        conn.execute(
-            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
-             VALUES (1, 'stopped', ?1, NULL)",
-            [utc(12).to_rfc3339()],
-        )
-        .unwrap();
-        // Interamente precedente: va escluso.
-        conn.execute(
-            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
-             VALUES (1, 'moving', ?1, ?2)",
-            (utc(1).to_rfc3339(), utc(2).to_rfc3339()),
-        )
-        .unwrap();
-
-        let range = TimeRange::new(utc(10), utc(20));
-        let iv = intervalli_per(&conn, UserId(1), range).unwrap();
-
-        assert_eq!(iv.len(), 2);
-        assert_eq!(iv[0].state, UserState::Moving);
-        assert_eq!(iv[1].state, UserState::Stopped);
-        // L'intervallo aperto resta tale anche dopo la lettura.
-        assert_eq!(iv[1].end, None);
-    }
-}
-
 /// Inserisce una posizione nello storico.
 ///
 /// Gli istanti si scrivono in ISO 8601 UTC, lo stesso formato che la lettura si
@@ -672,4 +592,87 @@ fn ritira_arretrati(
     tx.commit()?;
 
     Ok(arretrati)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn utc(h: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 8, 20, h, 0, 0).unwrap()
+    }
+
+    /// Database in memoria con lo schema applicato e un utente di prova.
+    fn db_con_utente() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at)
+             VALUES (1, 'camion', 'x', 'trucker', ?1)",
+            [utc(0).to_rfc3339()],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_posizioni_per_filtra_sul_range() {
+        let conn = db_con_utente();
+        for (at, lat, lon) in [
+            (utc(11), 45.0, 7.0),
+            (utc(12), 45.5, 7.0),
+            (utc(23), 46.0, 7.0),
+        ] {
+            conn.execute(
+                "INSERT INTO positions (user_id, at, lat, lon) VALUES (1, ?1, ?2, ?3)",
+                (at.to_rfc3339(), lat, lon),
+            )
+            .unwrap();
+        }
+
+        // Periodo dalle 10 alle 20, estremo finale escluso.
+        let range = TimeRange::new(utc(10), utc(20));
+        let pos = posizioni_per(&conn, UserId(1), range).unwrap();
+
+        // Quella delle 23 resta fuori.
+        assert_eq!(pos.len(), 2);
+        assert_eq!(pos[0].at, utc(11));
+        assert_eq!(pos[1].at, utc(12));
+    }
+
+    #[test]
+    fn test_intervalli_per_include_sovrapposti_e_aperti() {
+        let conn = db_con_utente();
+        // Chiuso e tutto dentro il periodo.
+        conn.execute(
+            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+             VALUES (1, 'moving', ?1, ?2)",
+            (utc(11).to_rfc3339(), utc(12).to_rfc3339()),
+        )
+        .unwrap();
+        // Ancora aperto: si sovrappone al periodo e va incluso.
+        conn.execute(
+            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+             VALUES (1, 'stopped', ?1, NULL)",
+            [utc(12).to_rfc3339()],
+        )
+        .unwrap();
+        // Interamente precedente: va escluso.
+        conn.execute(
+            "INSERT INTO state_intervals (user_id, state, start_at, end_at)
+             VALUES (1, 'moving', ?1, ?2)",
+            (utc(1).to_rfc3339(), utc(2).to_rfc3339()),
+        )
+        .unwrap();
+
+        let range = TimeRange::new(utc(10), utc(20));
+        let iv = intervalli_per(&conn, UserId(1), range).unwrap();
+
+        assert_eq!(iv.len(), 2);
+        assert_eq!(iv[0].state, UserState::Moving);
+        assert_eq!(iv[1].state, UserState::Stopped);
+        // L'intervallo aperto resta tale anche dopo la lettura.
+        assert_eq!(iv[1].end, None);
+    }
 }

@@ -2,10 +2,10 @@
 //!
 //! Si occupa di instradare i messaggi in uscita dalla UI verso il socket TCP e viceversa.
 
+use geo_net::connection::ClientFramed;
 use geo_protocol::{AdminMessage, AdminReply};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use geo_net::connection::ClientFramed;
 
 /// Loop asincrono: smista i comandi dalla UI al server e inoltra le risposte dal server alla UI.
 pub async fn run_admin_connection(
@@ -16,7 +16,10 @@ pub async fn run_admin_connection(
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
 
     // Richiede la flotta iniziale
-    if geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet).await.is_err() {
+    if geo_net::connection::send_msg(&mut framed, &AdminMessage::ListFleet)
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -62,4 +65,3 @@ pub async fn run_admin_connection(
         }
     }
 }
-

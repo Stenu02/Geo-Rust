@@ -27,10 +27,7 @@ pub enum Strategy {
     Manual,
 
     /// Genera posizioni casuali entro un raggio dall'origine
-    Random {
-        origin: Position,
-        radius_km: f64,
-    },
+    Random { origin: Position, radius_km: f64 },
 }
 
 /// Esegue il parsing di una traccia nel formato MM:SS;lat;lon
@@ -48,42 +45,51 @@ pub fn parse_track(contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
         let mut fields = line.split(';');
 
         let time_str = fields
-            .next().ok_or_else(|| anyhow::anyhow!("Timestamp mancante."))?;
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Timestamp mancante."))?;
 
         let lat_str = fields
-            .next().ok_or_else(|| anyhow::anyhow!("Latitudine mancante."))?;
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Latitudine mancante."))?;
 
         let lon_str = fields
-            .next().ok_or_else(|| anyhow::anyhow!("Longitudine mancante."))?;
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Longitudine mancante."))?;
 
         if fields.next().is_some() {
             anyhow::bail!("Riga {line_number}: attesi 3 campi separati da ';'");
         }
 
-        let (minutes_str, seconds_str) = time_str
-            .split_once(':')
-            .ok_or_else(|| {
-                anyhow::anyhow!("Riga {line_number}: formato timestamp non valido '{time_str}', atteso MM:SS.")
-            })?;
-
-        let minutes: i64 = minutes_str.trim().parse().map_err(|_| {
-            anyhow::anyhow!("Riga {line_number}: minuti non validi.")
+        let (minutes_str, seconds_str) = time_str.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Riga {line_number}: formato timestamp non valido '{time_str}', atteso MM:SS."
+            )
         })?;
 
-        let seconds: i64 = seconds_str.trim().parse().map_err(|_| {
-            anyhow::anyhow!("Riga {line_number}: secondi non validi.")
-        })?;
+        let minutes: i64 = minutes_str
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Riga {line_number}: minuti non validi."))?;
+
+        let seconds: i64 = seconds_str
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Riga {line_number}: secondi non validi."))?;
 
         let total_seconds = minutes * 60 + seconds;
 
         // Supporta sia il formato decimale con virgola sia quello con punto
-        let lat: f64 = lat_str.trim().replace(',', ".").parse().map_err(|_| {
-            anyhow::anyhow!("Riga {line_number}: latitudine non valida.")
-        })?;
+        let lat: f64 = lat_str
+            .trim()
+            .replace(',', ".")
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Riga {line_number}: latitudine non valida."))?;
 
-        let lon: f64 = lon_str.trim().replace(',', ".").parse().map_err(|_| {
-            anyhow::anyhow!("Riga {line_number}: longitudine non valida.")
-        })?;
+        let lon: f64 = lon_str
+            .trim()
+            .replace(',', ".")
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Riga {line_number}: longitudine non valida."))?;
 
         let position = Position::new(lat, lon);
 
@@ -99,7 +105,12 @@ pub fn parse_track(contents: &str) -> anyhow::Result<Vec<(i64, Position)>> {
 
 /// Genera una traccia pseudo-casuale entro radius_km dall'origine
 /// I punti vengono distanziati temporalmente di interval_sec secondi
-pub fn random_generator(origin: Position, radius_km: f64, points_to_generate: usize, interval_sec: i64) -> Vec<(i64, Position)> {
+pub fn random_generator(
+    origin: Position,
+    radius_km: f64,
+    points_to_generate: usize,
+    interval_sec: i64,
+) -> Vec<(i64, Position)> {
     let mut rng = rand::thread_rng();
     let mut points = Vec::with_capacity(points_to_generate);
 
@@ -120,13 +131,11 @@ pub fn random_generator(origin: Position, radius_km: f64, points_to_generate: us
 pub fn offset_position(origin: Position, distance_km: f64, angle_rad: f64) -> Position {
     let radians_to_degrees = 180.0 / std::f64::consts::PI;
 
-    let delta_lat =
-        (distance_km * angle_rad.cos()) / EARTH_RADIUS_KM * radians_to_degrees;
+    let delta_lat = (distance_km * angle_rad.cos()) / EARTH_RADIUS_KM * radians_to_degrees;
 
-    let delta_lon =
-        (distance_km * angle_rad.sin())
-            / (EARTH_RADIUS_KM * origin.lat.to_radians().cos())
-            * radians_to_degrees;
+    let delta_lon = (distance_km * angle_rad.sin())
+        / (EARTH_RADIUS_KM * origin.lat.to_radians().cos())
+        * radians_to_degrees;
 
     Position::new(origin.lat + delta_lat, origin.lon + delta_lon)
 }
@@ -157,19 +166,14 @@ impl PositionSimulator {
                 (points, initial_position)
             }
 
-            Strategy::Interpolated { from, .. } => {
-                (Vec::new(), *from)
-            }
+            Strategy::Interpolated { from, .. } => (Vec::new(), *from),
 
             Strategy::Manual => {
                 // Posizione iniziale usata finché la TUI non riceve /pos
                 (Vec::new(), Position::new(45.0703, 7.6869))
             }
 
-            Strategy::Random {
-                origin,
-                radius_km,
-            } => {
+            Strategy::Random { origin, radius_km } => {
                 if !origin.is_valid() {
                     anyhow::bail!("Origine della strategia random non valida.");
                 }
@@ -238,7 +242,8 @@ impl PositionSimulator {
 
                 let effective_secs = elapsed_secs - paused_so_far;
 
-                let progress_ratio = (effective_secs as f64 / *duration_secs as f64).clamp(0.0, 1.0);
+                let progress_ratio =
+                    (effective_secs as f64 / *duration_secs as f64).clamp(0.0, 1.0);
 
                 self.current_pos = Position::new(
                     from.lat + (to.lat - from.lat) * progress_ratio,
@@ -265,17 +270,13 @@ mod tests {
 
     #[test]
     fn test_track_parser_comma_decimal() {
-        let contents =
-            "00:00;45,0618513;7,6797161\n00:30;45,0601242;7,6851330";
+        let contents = "00:00;45,0618513;7,6797161\n00:30;45,0601242;7,6851330";
 
         let track = parse_track(contents).expect("Il parsing doveva avvenire.");
 
         assert_eq!(track.len(), 2);
         assert_eq!(track[0].0, 0);
-        assert_eq!(
-            track[0].1,
-            Position::new(45.0618513, 7.6797161)
-        );
+        assert_eq!(track[0].1, Position::new(45.0618513, 7.6797161));
     }
 
     #[test]
@@ -411,7 +412,7 @@ mod tests {
     }
 
     /// All'istante esatto in cui una pausa finisce, il movimento è già ripreso
-   
+
     #[test]
     fn test_simulator_interpolated_resumes_exactly_at_pause_end() {
         let from = Position::new(45.0, 7.0);
@@ -456,8 +457,7 @@ mod tests {
         let position_before_pause = simulator.next_position(29);
         let position_after_pause = simulator.next_position(91);
 
-        let delta_lat =
-            (position_after_pause.lat - position_before_pause.lat).abs();
+        let delta_lat = (position_after_pause.lat - position_before_pause.lat).abs();
 
         assert!(
             delta_lat < 0.05,

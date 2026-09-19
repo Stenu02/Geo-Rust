@@ -16,7 +16,11 @@ pub enum Event {
     /// Conferma di ricezione posizione, con lo stato risultante
     PositionAck { state: UserState },
     /// Messaggio di chat ricevuto dal server
-    ChatReceived { text: String, broadcast: bool, at: DateTime<Utc> },
+    ChatReceived {
+        text: String,
+        broadcast: bool,
+        at: DateTime<Utc>,
+    },
     /// Errore riportato dal server
     ServerError { code: ErrorCode, detail: String },
 }

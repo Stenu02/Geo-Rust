@@ -1,6 +1,5 @@
 //! Dominio di GeoRuggine: cosa significano i dati e quali regole li governano.
 
-
 pub mod analytics;
 pub mod geo_math;
 pub mod interval;
@@ -25,9 +24,9 @@ pub const STOP_THRESHOLD_SECS: i64 = 180;
 /// Tolleranza nel confronto fra due coordinate.
 ///
 /// Confrontare `f64` con `==` è un metodo fragile. In questo caso
-/// si opta per considerare equivalenti due coordinate se distano meno di 1e-6 gradi 
+/// si opta per considerare equivalenti due coordinate se distano meno di 1e-6 gradi
 /// i quali valgono circa 11 cm:
-/// è una distanza abbastanza fine da non mascherare un movimento reale, 
+/// è una distanza abbastanza fine da non mascherare un movimento reale,
 /// abbastanza grosso da assorbire il rumore di rappresentazione.
 pub const COORD_EPSILON_DEG: f64 = 1e-6;
 

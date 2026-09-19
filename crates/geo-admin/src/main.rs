@@ -1,17 +1,17 @@
 //! Punto di ingresso dell'applicazione `geo-admin`.
 //!
 //! Effettua il parsing degli argomenti da riga di comando, gestisce il processo
-//! di login, e fa partire in background la connessione di rete e in foreground 
+//! di login, e fa partire in background la connessione di rete e in foreground
 //! l'interfaccia utente (TUI).
 
 use clap::Parser;
-use geo_admin::tui::AdminUi;
-use std::io::{self, Write};
 use crossterm::{
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use geo_admin::tui::AdminUi;
 use ratatui::{backend::CrosstermBackend, Terminal};
+use std::io::{self, Write};
 
 /// Argomenti da riga di comando per la console dell'amministratore.
 #[derive(Parser)]
@@ -81,7 +81,9 @@ async fn main() -> anyhow::Result<()> {
     let (command_tx, command_rx) = tokio::sync::mpsc::channel(32);
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(32);
 
-    tokio::spawn(geo_admin::network::run_admin_connection(framed, command_rx, event_tx));
+    tokio::spawn(geo_admin::network::run_admin_connection(
+        framed, command_rx, event_tx,
+    ));
 
     // 3. Setup del terminale ed esecuzione UI
     enable_raw_mode()?;
@@ -119,7 +121,16 @@ mod tests {
 
     #[test]
     fn test_args_parsing() {
-        let args = Args::try_parse_from(["geo-admin", "--server", "192.168.1.1:8080", "--username", "admin", "--password", "secret"]).unwrap();
+        let args = Args::try_parse_from([
+            "geo-admin",
+            "--server",
+            "192.168.1.1:8080",
+            "--username",
+            "admin",
+            "--password",
+            "secret",
+        ])
+        .unwrap();
         assert_eq!(args.server, "192.168.1.1:8080");
         assert_eq!(args.username, Some("admin".to_string()));
         assert_eq!(args.password, Some("secret".to_string()));

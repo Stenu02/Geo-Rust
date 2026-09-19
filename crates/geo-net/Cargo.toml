@@ -13,6 +13,3 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 bytes = { workspace = true }
 chrono = "0.4.45"
-
-[dev-dependencies]
-geo-server = { path = "../geo-server" }

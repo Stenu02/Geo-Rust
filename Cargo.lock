@@ -498,7 +498,6 @@ dependencies = [
  "geo-protocol",
  "ratatui",
  "rpassword",
- "serde",
  "tokio",
 ]
 
@@ -516,7 +515,6 @@ dependencies = [
  "rand",
  "ratatui",
  "rpassword",
- "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -529,7 +527,6 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "serde",
- "thiserror",
 ]
 
 [[package]]
@@ -542,7 +539,6 @@ dependencies = [
  "futures",
  "geo-core",
  "geo-protocol",
- "geo-server",
  "serde",
  "tokio",
  "tokio-util",
@@ -573,7 +569,6 @@ dependencies = [
  "geo-core",
  "geo-protocol",
  "libc",
- "rand",
  "rpassword",
  "rusqlite",
  "serde",
