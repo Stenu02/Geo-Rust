@@ -74,7 +74,7 @@ In un secondo terminale, con il server già avviato. La prima volta si aggiunge
 `--register`:
 
 ```bash
-./target/release/geo-client --username camion01 --register --track assets/tracks/con_pause.csv
+./target/release/geo-client --username camion01 --register --track assets/tracks/demo_camion01.csv
 ```
 
 ```
@@ -86,7 +86,7 @@ Dalle volte successive si omette `--register` e la password viene chiesta una
 volta sola:
 
 ```bash
-./target/release/geo-client --username camion01 --track assets/tracks/con_pause.csv
+./target/release/geo-client --username camion01 --track assets/tracks/demo_camion01.csv
 ```
 
 Lasciarlo per sbaglio non fa danni: il server risponde che il nome è già preso
@@ -106,6 +106,10 @@ Il movimento è simulato e si sceglie come:
 | `--interpolated "45.06,7.67;45.05,7.71"` | va in linea retta da un punto all'altro |
 | `--random "45.07,7.68;5"` | si sposta a caso entro cinque chilometri dal punto |
 | nessuna delle tre | resta fermo, e lo si muove a mano |
+
+Il file traccia ha una riga per rilevazione, nel formato `MM:SS;lat;lon`:
+l'istante dall'avvio, poi latitudine e longitudine in gradi decimali, con la
+virgola o il punto come separatore. Gli esempi sono in `assets/tracks/`.
 
 Lo schermo si divide in tre riquadri: in alto lo stato e le coordinate attuali,
 al centro la conversazione con la centrale, in basso la riga per scrivere.

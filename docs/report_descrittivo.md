@@ -104,9 +104,9 @@ Compilazione in release con Rust 1.93.1.
 
 | Eseguibile | macOS (arm64) | Windows (x86-64) | macOS con il profilo standard di Cargo, per confronto |
 |---|---|---|---|
-| `geo-server` | 2 012 064 byte (1,92 MiB) | 2450432 (2,34 MiB) | 6 064 504 byte (5,78 MiB) |
-| `geo-client` | 1 239 872 byte (1,18 MiB) | 1456128 (1,39 MiB) | 3 230 296 byte (3,08 MiB) |
-| `geo-admin` | 1 139 392 byte (1,09 MiB) | 1276928 (1,22 MiB) | 2 809 656 byte (2,68 MiB) |
+| `geo-server` | 2 012 064 byte (1,92 MiB) | 2 450 432 byte (2,34 MiB) | 6 064 504 byte (5,78 MiB) |
+| `geo-client` | 1 239 872 byte (1,18 MiB) | 1 456 128 byte (1,39 MiB) | 3 230 296 byte (3,08 MiB) |
+| `geo-admin` | 1 139 392 byte (1,09 MiB) | 1 276 928 byte (1,22 MiB) | 2 809 656 byte (2,68 MiB) |
 
 L'ultima colonna riporta gli stessi programmi compilati con il profilo di
 release predefinito di Cargo. La differenza è dovuta al profilo scelto nel
@@ -158,6 +158,6 @@ piattaforma corrispondente (`libc` e `windows-sys`).
 ## Documenti collegati
 
 - `docs/manuale_utente.md` - installazione, avvio, uso dei tre programmi
-- `docs/manuale_sviluppatore.md` - struttura del codice, flussi principali, scelte di progetto, database
+- `docs/manuale_sviluppatore.md` - struttura del codice, flussi principali, database
 - `docs/requisiti.md` - testo dei requisiti con le citazioni dalla traccia
 - `docs/database.md` - schema del database

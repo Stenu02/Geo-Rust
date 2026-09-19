@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS state_intervals (
     start_at TEXT    NOT NULL,
     end_at   TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_intervals_user_start ON state_intervals(user_id, start_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intervals_one_open
+    ON state_intervals(user_id) WHERE end_at IS NULL;
 ```
 
 | Colonna | Significato |
@@ -100,6 +105,15 @@ CREATE TABLE IF NOT EXISTS state_intervals (
 | `state` | `'disconnected'`, `'stopped'` oppure `'moving'`. |
 | `start_at` | Inizio dell'intervallo, ISO 8601 UTC. |
 | `end_at` | Fine. `NULL` significa "ancora in corso", cioè lo stato attuale dell'utente. |
+
+### I due indici
+
+Il primo, su `(user_id, start_at)`, serve alle interrogazioni: si legge sempre
+per utente e per periodo. Il secondo è un vincolo: è unico e vale solo sulle
+righe con `end_at` vuoto, quindi per ogni utente può esistere al massimo un
+intervallo aperto. Un utente è in uno stato solo alla volta, e a garantirlo è
+il database, non un controllo nel codice: un secondo intervallo aperto
+verrebbe rifiutato dalla scrittura.
 
 
 

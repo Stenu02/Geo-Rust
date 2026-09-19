@@ -54,7 +54,7 @@ Serve Rust (la versione è fissata in `rust-toolchain.toml`).
 cargo build --release
 ./target/release/geo-server --create-admin capoflotta    # una volta sola
 ./target/release/geo-server                              # terminale 1
-./target/release/geo-client --username camion01 --register --track assets/tracks/con_pause.csv   # terminale 2
+./target/release/geo-client --username camion01 --register --track assets/tracks/demo_camion01.csv   # terminale 2
 ./target/release/geo-admin --username capoflotta         # terminale 3
 ```
 
