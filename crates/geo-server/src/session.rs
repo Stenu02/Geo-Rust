@@ -58,7 +58,8 @@ pub async fn handle(
 
     if let Some((user, username)) = sessione {
         let ora = Utc::now();
-        if let Some(t) = registry.on_disconnect(user, ora) {
+        // Possono essere due: il FERMO rimasto in sospeso, poi la disconnessione.
+        for t in registry.on_disconnect(user, ora) {
             if let Err(e) = storage.apply_transition(user, t.to, t.at).await {
                 tracing::error!(%user, error = %e, "chiusura intervallo fallita");
             }
@@ -337,13 +338,15 @@ async fn trucker_loop(
                     .await?;
                     continue;
                 }
-
+                // L'istante lo decide il server: e' lo stesso orologio di login, disconnessione
+                // e controllo periodico. L'orario del client puo' essere sfasato, o falso.
+                let server_current_time = Utc::now();
                 tracing::debug!(%user, %at, lat = position.lat, lon = position.lon, "posizione");
-                storage.save_position(user, at, position).await?;
+                storage.save_position(user, server_current_time, position).await?;
 
                 // La macchina a stati decide se questa posizione e' un cambio,
                 // e nel caso restituisce la transizione da salvare.
-                if let Some(t) = registry.on_position(user, at, position) {
+                if let Some(t) = registry.on_position(user, server_current_time, position) {
                     storage.apply_transition(user, t.to, t.at).await?;
                 }
 

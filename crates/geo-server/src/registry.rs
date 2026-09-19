@@ -144,8 +144,12 @@ impl Registry {
     }
 
     /// Disconnessione: chiude lo stato corrente e passa a sconnesso.
-    pub fn on_disconnect(&self, user: UserId, now: DateTime<Utc>) -> Option<Transition> {
-        self.blocca().get_mut(&user)?.fsm.on_disconnect(now)
+    pub fn on_disconnect(&self, user: UserId, now: DateTime<Utc>) -> Vec<Transition> {
+        self.blocca()
+            .get_mut(&user)
+            .map(|voce| voce.fsm.on_disconnect(now))
+            .unwrap_or_default()
+
     }
 
     /// Rivaluta tutti i collegati e raccoglie le transizioni scattate.
@@ -332,7 +336,7 @@ mod tests {
         assert!(reg
             .on_position(UserId(99), Utc::now(), Position::new(45.0, 7.0))
             .is_none());
-        assert!(reg.on_disconnect(UserId(99), Utc::now()).is_none());
+        assert!(reg.on_disconnect(UserId(99), Utc::now()).is_empty());
         assert!(reg.tick_all(Utc::now()).is_empty());
     }
 

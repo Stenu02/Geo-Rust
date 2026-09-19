@@ -14,6 +14,7 @@ use geo_server::{Server, ServerConfig};
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use chrono::Utc;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tokio_util::sync::CancellationToken;
@@ -465,17 +466,17 @@ async fn chi_si_scollega_sparisce_dalla_flotta() {
 async fn la_posizione_inviata_compare_nella_flotta() {
     let (addr, shutdown) = avvia().await;
     let mut c1 = autenticato(addr, "camion01").await.0;
-
-    let ora = chrono::Utc::now();
+    let prima = chrono::Utc::now();
     invia(
         &mut c1,
         &ClientMessage::PositionUpdate {
-            at: ora,
+            at: prima,
             position: geo_core::Position::new(45.0618513, 7.6797161),
         },
     )
     .await;
     let _: ServerMessage = ricevi(&mut c1).await;
+    let dopo= Utc::now();
 
     let mut admin = admin(addr).await;
     invia(&mut admin, &AdminMessage::ListFleet).await;
@@ -484,7 +485,10 @@ async fn la_posizione_inviata_compare_nella_flotta() {
         AdminReply::Fleet { entries } => {
             let p = entries[0].last_position.expect("posizione mancante");
             assert!((p.lat - 45.0618513).abs() < 1e-9);
-            assert_eq!(entries[0].last_update, Some(ora));
+            // L'ultimo aggiornamento è l'istante di ricezione sul server, non
+            // l'orario dichiarato dal client: cade fra l'invio e la conferma.
+            let t = entries[0].last_update.expect("ultimo aggiornamento mancante");
+            assert!(prima <= t && t <= dopo, "{t} fuori da [{prima}, {dopo}]");
         }
         altro => panic!("attesa Fleet, ricevuto {altro:?}"),
     }
@@ -671,6 +675,42 @@ async fn le_posizioni_finiscono_nel_report_dell_amministratore() {
                 "una polilinea di tre punti distinti ha distanza positiva"
             );
         }
+        altro => panic!("atteso QueryResult, ricevuto {altro:?}"),
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn l_orario_delle_posizioni_lo_decide_il_server() {
+    let (addr, shutdown) = avvia().await;
+    let (mut camion, camion_id) = autenticato(addr, "camion01").await;
+
+    // Un client con l'orologio avanti di due giorni: se il server si fidasse
+    // del suo `at`, queste posizioni finirebbero nel resoconto di dopodomani.
+    let sbagliato = chrono::Utc::now() + chrono::Duration::days(2);
+    for (i, (lat, lon)) in [(45.0618513, 7.6797161), (45.0601242, 7.6851330)]
+        .iter()
+        .enumerate()
+    {
+        invia(
+            &mut camion,
+            &ClientMessage::PositionUpdate {
+                at: sbagliato + chrono::Duration::seconds(30 * i as i64),
+                position: geo_core::Position::new(*lat, *lon),
+            },
+        )
+            .await;
+        let _: ServerMessage = ricevi(&mut camion).await;
+    }
+
+    let mut admin = admin(addr).await;
+    invia(&mut admin, &AdminMessage::Query { user: camion_id, spec: RangeSpec::Today }).await;
+    match ricevi::<AdminReply>(&mut admin).await {
+        AdminReply::QueryResult(report) => assert_eq!(
+            report.track.len(),
+            2,
+            "le posizioni vanno datate con l'orologio del server, non con quello del client"
+        ),
         altro => panic!("atteso QueryResult, ricevuto {altro:?}"),
     }
     shutdown.cancel();

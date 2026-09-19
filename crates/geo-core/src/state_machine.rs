@@ -21,10 +21,6 @@ pub enum UserState {
 }
 
 impl UserState {
-    /// Vero solo per `Stopped`. Usato dalle analisi per la "durata delle pause".
-    pub fn counts_as_pause(&self) -> bool {
-        matches!(self, UserState::Stopped)
-    }
 
     /// Il campo salvato nella colonna `state` di `state_intervals` a db.
     pub fn as_db_str(&self) -> &'static str {
@@ -168,14 +164,24 @@ impl StateMachine {
 
     /// Disconnessione da qualsiasi stato.
     ///
+    /// Se nel frattempo è scaduta la soglia dei tre minuti ma il controllo
+    /// periodico non l'ha ancora rilevata, prima si registra il passaggio a FERMO
+    /// (all'istante vero della scadenza, calcolato come ultimo istante + 3 minuti),
+    /// poi la disconnessione: è questo il motivo per cui le transizioni possono essere due.
+    ///
     /// Alla riconnessione il timer dei 3 minuti riparte.
-    pub fn on_disconnect(&mut self, now: DateTime<Utc>) -> Option<Transition> {
+    pub fn on_disconnect(&mut self, now: DateTime<Utc>) -> Vec<Transition> {
         if self.state == UserState::Disconnected {
-            return None;
+            return Vec::new();
+        }
+        let mut transizioni = Vec::new();
+        if let Some(t) = self.on_tick(now){
+            transizioni.push(t);
         }
         self.last_position = None;
         self.last_change_at = None;
-        Some(self.transition_to(UserState::Disconnected, now))
+        transizioni.push(self.transition_to(UserState::Disconnected, now));
+        transizioni
     }
 }
 
@@ -236,7 +242,9 @@ mod tests {
         assert_eq!((tr.from, tr.to), (UserState::Moving, UserState::Stopped));
 
         // disconnessione: FERMO -> SCONNESSO, mantenendo il `from` reale
-        let tr = sm.on_disconnect(t(400)).unwrap();
+        let ts = sm.on_disconnect(t(400));
+        assert_eq!(ts.len(), 1);
+        let tr = ts[0];
         assert_eq!(
             (tr.from, tr.to),
             (UserState::Stopped, UserState::Disconnected)
@@ -302,5 +310,32 @@ mod tests {
         let tr = sm.on_tick(t(120) + stop_threshold()).unwrap();
         assert_eq!(tr.to, UserState::Stopped);
         assert_eq!(tr.at, t(120) + stop_threshold());
+    }
+
+    #[test]
+    fn test_disconnessione_a_soglia_scaduta_registra_prima_il_fermo() {
+        let mut sm = StateMachine::new();
+        sm.on_login(t(0));
+        sm.on_position(t(30), Position::new(45.0, 7.0)); // primo fix
+        sm.on_position(t(60), Position::new(45.001, 7.0)); // IN MOVIMENTO, ultimo cambio a t(60)
+
+        // Si scollega 5 s dopo la scadenza dei tre minuti, prima del controllo periodico.
+        let ts = sm.on_disconnect(t(60) + stop_threshold() + Duration::seconds(5));
+        assert_eq!(ts.len(), 2);
+        assert_eq!((ts[0].from, ts[0].to), (UserState::Moving, UserState::Stopped));
+        assert_eq!(ts[0].at, t(60) + stop_threshold()); // l'istante vero della sosta
+        assert_eq!((ts[1].from, ts[1].to), (UserState::Stopped, UserState::Disconnected));
+    }
+
+    #[test]
+    fn test_disconnessione_prima_della_soglia_e_una_sola_transizione() {
+        let mut sm = StateMachine::new();
+        sm.on_login(t(0));
+        sm.on_position(t(30), Position::new(45.0, 7.0));
+        sm.on_position(t(60), Position::new(45.001, 7.0));
+
+        let ts = sm.on_disconnect(t(120));
+        assert_eq!(ts.len(), 1);
+        assert_eq!((ts[0].from, ts[0].to), (UserState::Moving, UserState::Disconnected));
     }
 }
