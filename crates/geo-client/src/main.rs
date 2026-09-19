@@ -131,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Viene usato tokio::time::interval per evitare l'accumulo di deriva temporale
     let scale = args.time_scale.max(1);
-    let interval_duration = Duration::from_secs(30) / scale;
+    let interval_duration = Duration::from_secs(geo_core::POSITION_INTERVAL_SECS as u64) / scale;
     let mut ticker = tokio::time::interval(interval_duration);
     let mut elapsed_secs = 0i64;
 
@@ -160,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
                     if command_tx.send(Command::PositionUpdate { position: pos }).await.is_err() {
                         break;
                     }
-                    elapsed_secs += 30;
+                    elapsed_secs += geo_core::POSITION_INTERVAL_SECS;
                 }
 
                 // Intercetta le coordinate inserite a mano dalla TUI

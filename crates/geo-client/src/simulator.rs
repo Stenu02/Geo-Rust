@@ -182,7 +182,7 @@ impl PositionSimulator {
                     anyhow::bail!("Il raggio della strategia random non può essere negativo.");
                 }
 
-                let points = random_generator(*origin, *radius_km, 100, 30);
+                let points = random_generator(*origin, *radius_km, 100, geo_core::POSITION_INTERVAL_SECS);
                 (points, *origin)
             }
         };
